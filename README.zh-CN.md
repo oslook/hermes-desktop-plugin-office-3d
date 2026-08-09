@@ -21,6 +21,14 @@
 - 底部状态徽章：**online / busy / 活跃会话 / tokens / agents / cost**，跨所有 profile 聚合。
 - 后端只读各 profile `state.db` 的聚合列（COUNT/SUM/MAX），**绝不读会话正文**。
 
+## 技术栈
+
+- **@hermes/plugin-sdk** — Hermes 桌面插件 API（单文件 ESM，无需构建）
+- **Canvas 2D** — 手写等距（isometric）投影（不用 WebGL / three.js）
+- **React**（经 SDK 的 jsx runtime）— `useQuery` 轮询 + canvas 生命周期管理
+- **Python + FastAPI** — 只读的 dashboard 后端，挂载于 `/api/plugins/office-3d/`
+- **SQLite**（只读，仅标准库）— 各 profile 的会话 / token / 成本聚合
+
 ## 工作原理
 
 三个部分（对应 Hermes 桌面插件的三层）：
@@ -36,8 +44,8 @@
 ### 快速安装（脚本）
 
 ```bash
-git clone https://github.com/<你>/office-3d.git
-cd office-3d
+git clone https://github.com/oslook/hermes-desktop-plugin-office-3d.git
+cd hermes-desktop-plugin-office-3d
 bash install.sh
 ```
 

@@ -21,6 +21,14 @@ English | [中文](./README.zh-CN.md)
 - Bottom stat chips: **online / busy / active sessions / tokens / agents / cost** aggregated across every profile.
 - Backend reads only aggregate columns (COUNT/SUM/MAX) from each profile's `state.db` — never message contents.
 
+## Built with
+
+- **@hermes/plugin-sdk** — Hermes Desktop plugin API (single-file ESM, no build step)
+- **Canvas 2D** — hand-rolled isometric projection (no WebGL / three.js)
+- **React** via the SDK's jsx runtime — `useQuery` polling + canvas lifecycle
+- **Python + FastAPI** — read-only dashboard backend at `/api/plugins/office-3d/`
+- **SQLite** (read-only, stdlib only) — per-profile session / token / cost aggregates
+
 ## How it works
 
 Three pieces (matching the three layers of a Hermes desktop plugin):
@@ -36,8 +44,8 @@ The plugin is portable: `HERMES_HOME` honours `$HERMES_HOME` (falls back to `~/.
 ### Quick (script)
 
 ```bash
-git clone https://github.com/<you>/office-3d.git
-cd office-3d
+git clone https://github.com/oslook/hermes-desktop-plugin-office-3d.git
+cd hermes-desktop-plugin-office-3d
 bash install.sh
 ```
 
