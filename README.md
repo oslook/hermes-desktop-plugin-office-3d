@@ -46,12 +46,25 @@ The plugin is portable: `HERMES_HOME` honours `$HERMES_HOME` (falls back to `~/.
 ```bash
 git clone https://github.com/oslook/hermes-desktop-plugin-office-3d.git
 cd hermes-desktop-plugin-office-3d
+```
+
+**Linux / macOS:**
+
+```bash
 bash install.sh
 ```
 
-The script copies the files into your Hermes home, enables the backend, and tells you how to reload.
+**Windows (PowerShell):**
+
+```powershell
+.\install.ps1
+```
+
+The script copies the files into your Hermes home, enables the backend, and tells you how to reload. Both honour `HERMES_HOME` (falls back to `~/.hermes`, or `%USERPROFILE%\.hermes` on Windows).
 
 ### Manual
+
+**Linux / macOS:**
 
 ```bash
 # 1. Frontend
@@ -62,6 +75,23 @@ cp desktop-plugins/office-3d/plugin.js "${HERMES_HOME:-$HOME/.hermes}/desktop-pl
 mkdir -p "${HERMES_HOME:-$HOME/.hermes}/plugins/office-3d/dashboard"
 cp plugins/office-3d/dashboard/plugin_api.py plugins/office-3d/dashboard/manifest.json \
    "${HERMES_HOME:-$HOME/.hermes}/plugins/office-3d/dashboard/"
+
+# 3. Enable the backend (writes a real YAML list into config.yaml)
+hermes plugins enable office-3d
+```
+
+**Windows (PowerShell):**
+
+```powershell
+$H = if ($env:HERMES_HOME) { $env:HERMES_HOME } else { "$env:USERPROFILE\.hermes" }
+
+# 1. Frontend
+New-Item -ItemType Directory -Force "$H\desktop-plugins\office-3d" | Out-Null
+Copy-Item desktop-plugins\office-3d\plugin.js "$H\desktop-plugins\office-3d\" -Force
+
+# 2. Backend
+New-Item -ItemType Directory -Force "$H\plugins\office-3d\dashboard" | Out-Null
+Copy-Item plugins\office-3d\dashboard\plugin_api.py,plugins\office-3d\dashboard\manifest.json "$H\plugins\office-3d\dashboard\" -Force
 
 # 3. Enable the backend (writes a real YAML list into config.yaml)
 hermes plugins enable office-3d

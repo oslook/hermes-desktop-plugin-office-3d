@@ -46,12 +46,25 @@
 ```bash
 git clone https://github.com/oslook/hermes-desktop-plugin-office-3d.git
 cd hermes-desktop-plugin-office-3d
+```
+
+**Linux / macOS：**
+
+```bash
 bash install.sh
 ```
 
-脚本会把文件复制到你的 Hermes home、启用后端，并提示如何重载。
+**Windows（PowerShell）：**
+
+```powershell
+.\install.ps1
+```
+
+脚本会把文件复制到你的 Hermes home、启用后端，并提示如何重载。都遵循 `HERMES_HOME`（默认回退到 `~/.hermes`，Windows 为 `%USERPROFILE%\.hermes`）。
 
 ### 手动安装
+
+**Linux / macOS：**
 
 ```bash
 # 1. 前端
@@ -62,6 +75,23 @@ cp desktop-plugins/office-3d/plugin.js "${HERMES_HOME:-$HOME/.hermes}/desktop-pl
 mkdir -p "${HERMES_HOME:-$HOME/.hermes}/plugins/office-3d/dashboard"
 cp plugins/office-3d/dashboard/plugin_api.py plugins/office-3d/dashboard/manifest.json \
    "${HERMES_HOME:-$HOME/.hermes}/plugins/office-3d/dashboard/"
+
+# 3. 启用后端（会往 config.yaml 写入真正的 YAML 列表）
+hermes plugins enable office-3d
+```
+
+**Windows（PowerShell）：**
+
+```powershell
+$H = if ($env:HERMES_HOME) { $env:HERMES_HOME } else { "$env:USERPROFILE\.hermes" }
+
+# 1. 前端
+New-Item -ItemType Directory -Force "$H\desktop-plugins\office-3d" | Out-Null
+Copy-Item desktop-plugins\office-3d\plugin.js "$H\desktop-plugins\office-3d\" -Force
+
+# 2. 后端
+New-Item -ItemType Directory -Force "$H\plugins\office-3d\dashboard" | Out-Null
+Copy-Item plugins\office-3d\dashboard\plugin_api.py,plugins\office-3d\dashboard\manifest.json "$H\plugins\office-3d\dashboard\" -Force
 
 # 3. 启用后端（会往 config.yaml 写入真正的 YAML 列表）
 hermes plugins enable office-3d
