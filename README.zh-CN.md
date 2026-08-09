@@ -74,7 +74,7 @@ hermes plugins enable office-3d
 
 ## 前置要求
 
-- 装了桌面 app 的 Hermes Agent（只有 CLI/gateway 不会加载桌面插件）。
+- Hermes Desktop **0.17.0+** —— 必须有桌面 app；只有 CLI/gateway 不会加载桌面插件。（在 0.20.0 上开发，向下测到 0.17.0。）
 - dashboard web 服务在运行（它才提供 `/api/plugins/...`）。
 
 ## 卸载

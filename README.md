@@ -74,7 +74,7 @@ Then make it take effect:
 
 ## Requirements
 
-- Hermes Agent with the desktop app (the CLI/gateway alone does not load desktop plugins).
+- Hermes Desktop **0.17.0+** — the desktop app is required; the CLI/gateway alone does not load desktop plugins. (Developed on 0.20.0, tested down to 0.17.0.)
 - The dashboard web server running (it serves `/api/plugins/...`).
 
 ## Uninstall
