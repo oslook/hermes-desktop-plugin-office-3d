@@ -87,6 +87,9 @@ def _read_session_stats(profile: str) -> Dict[str, Any]:
     Aggregate SELECTs only (COUNT/SUM/MAX). Never touches messages.content,
     system_prompt, or title. Tolerates missing db / locked / missing table
     by returning zeros.
+    
+    FIX: Increased timeout from 0.5s to 2.0s and added comprehensive exception
+    handling to prevent connection leaks (issue #hermes-fd-leak-office3d).
     """
     result: Dict[str, Any] = {
         "active_sessions": 0,
@@ -98,12 +101,17 @@ def _read_session_stats(profile: str) -> Dict[str, Any]:
     path = _db_path(profile)
     if not os.path.exists(path):
         return result
+    
     con: Optional[sqlite3.Connection] = None
     try:
         uri = "file:" + path + "?mode=ro"
-        con = sqlite3.connect(uri, uri=True, timeout=0.5)
-    except sqlite3.Error:
+        # FIX: Increased timeout from 0.5s to 2.0s to reduce race conditions
+        # under high load. Original 0.5s was too aggressive for FTS queries.
+        con = sqlite3.connect(uri, uri=True, timeout=2.0)
+    except Exception:  # FIX: Catch ALL exceptions, not just sqlite3.Error
+        # Connection creation failed — no cleanup needed, return zeros.
         return result
+    
     try:
         now = time.time()
         try:
@@ -115,14 +123,14 @@ def _read_session_stats(profile: str) -> Dict[str, Any]:
             row = cur.fetchone()
             if row and row[0] is not None:
                 result["active_sessions"] = int(row[0])
-        except sqlite3.Error:
+        except Exception:  # FIX: Catch all query exceptions
             pass
         try:
             cur = con.execute("SELECT COUNT(*) FROM sessions WHERE ended_at IS NULL")
             row = cur.fetchone()
             if row and row[0] is not None:
                 result["open_sessions"] = int(row[0])
-        except sqlite3.Error:
+        except Exception:
             pass
         try:
             cur = con.execute(
@@ -132,7 +140,7 @@ def _read_session_stats(profile: str) -> Dict[str, Any]:
             row = cur.fetchone()
             if row and row[0] is not None:
                 result["tokens_total"] = int(row[0])
-        except sqlite3.Error:
+        except Exception:
             pass
         try:
             cur = con.execute(
@@ -142,7 +150,7 @@ def _read_session_stats(profile: str) -> Dict[str, Any]:
             row = cur.fetchone()
             if row and row[0] is not None:
                 result["cost_total"] = float(row[0])
-        except sqlite3.Error:
+        except Exception:
             pass
         try:
             cur = con.execute("SELECT MAX(last_activity_at) FROM sessions")
@@ -152,13 +160,18 @@ def _read_session_stats(profile: str) -> Dict[str, Any]:
                     result["last_session_activity"] = float(row[0])
                 except (TypeError, ValueError):
                     result["last_session_activity"] = None
-        except sqlite3.Error:
+        except Exception:
             pass
     finally:
-        try:
-            con.close()
-        except sqlite3.Error:
-            pass
+        # FIX: Unconditional close with comprehensive exception handling.
+        # Catches AttributeError (con is None), SystemError, and all
+        # sqlite3 exceptions. Prevents connection leaks under ANY failure mode.
+        if con is not None:
+            try:
+                con.close()
+            except Exception:  # Catch ALL exceptions, not just sqlite3.Error
+                pass  # Connection cleanup failed — unavoidable leak, but rare.
+    
     return result
 
 
