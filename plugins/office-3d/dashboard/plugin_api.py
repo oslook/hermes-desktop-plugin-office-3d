@@ -1,22 +1,34 @@
 """office-3d dashboard API.
 
-Scans gateway_state.json files across Hermes profiles and returns a fixed
-list of six profile status entries for the Office 3D visualization.
+Scans gateway_state.json files across Hermes profiles and returns profile
+status entries for the Office 3D visualization.
 
 'online' is determined by PROCESS LIVENESS (os.kill(pid, 0)), not by the
 freshness of updated_at — the gateway does not refresh updated_at on a
 short interval, so a stale timestamp does not imply the gateway is down.
 
-Stdlib only.
+FD / load design (v1.0.2):
+- One cached read-only SQLite connection per profile state.db (not open/close
+  on every poll). Caps steady-state db fds at ~1–3 per profile.
+- All use of a cached connection is serialized under a lock (sqlite3
+  connections are not safe for concurrent multi-thread use).
+- Single aggregate SELECT per profile instead of five round-trips.
+- Short in-process response TTL to collapse concurrent/stacked polls.
+- Blocking work runs in a worker thread so the FastAPI event loop stays free.
+
+Stdlib only (+ fastapi for the router).
 """
 from __future__ import annotations
 
+import atexit
+import asyncio
 import glob
 import json
 import os
 import sqlite3
+import threading
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import APIRouter
 
@@ -25,6 +37,19 @@ router = APIRouter()
 # Resolve the Hermes home the same way the app does: honor $HERMES_HOME
 # (set under a named profile / custom install), fall back to ~/.hermes.
 HERMES_HOME = os.environ.get("HERMES_HOME") or os.path.expanduser("~/.hermes")
+
+# How long a computed /state payload may be reused (seconds). Frontend polls
+# every 5s; a 2s TTL collapses bursts without making the UI feel stale.
+_STATE_TTL_SEC = 2.0
+
+# Cached RO connections: path -> connection.
+# _db_lock serializes both cache mutation AND execute/fetch on those conns.
+_db_lock = threading.Lock()
+_ro_conns: Dict[str, sqlite3.Connection] = {}
+
+# Cached /state response: (monotonic_deadline, payload)
+_state_cache_lock = threading.Lock()
+_state_cache: Optional[Tuple[float, List[Dict[str, Any]]]] = None
 
 
 def _discover_profiles() -> List[str]:
@@ -81,15 +106,76 @@ def _db_path(profile: str) -> str:
     return os.path.join(HERMES_HOME, "profiles", profile, "state.db")
 
 
+def _close_ro_conn_unlocked(path: str) -> None:
+    """Drop a cached connection. Caller must hold _db_lock."""
+    con = _ro_conns.pop(path, None)
+    if con is None:
+        return
+    try:
+        con.close()
+    except Exception:
+        pass
+
+
+def _get_ro_conn_unlocked(path: str) -> Optional[sqlite3.Connection]:
+    """Return a process-cached read-only connection. Caller must hold _db_lock."""
+    con = _ro_conns.get(path)
+    if con is not None:
+        try:
+            con.execute("SELECT 1")
+            return con
+        except Exception:
+            _close_ro_conn_unlocked(path)
+
+    try:
+        uri = "file:" + path + "?mode=ro"
+        con = sqlite3.connect(
+            uri,
+            uri=True,
+            timeout=2.0,
+            check_same_thread=False,
+        )
+        try:
+            con.execute("PRAGMA query_only=ON")
+        except sqlite3.Error:
+            pass
+        _ro_conns[path] = con
+        return con
+    except Exception:
+        return None
+
+
+def _close_all_ro_conns() -> None:
+    with _db_lock:
+        paths = list(_ro_conns.keys())
+        for path in paths:
+            _close_ro_conn_unlocked(path)
+
+
+atexit.register(_close_all_ro_conns)
+
+
+_STATS_SQL = (
+    "SELECT "
+    "SUM(CASE WHEN last_activity_at IS NOT NULL AND last_activity_at >= ? "
+    "THEN 1 ELSE 0 END), "
+    "SUM(CASE WHEN ended_at IS NULL THEN 1 ELSE 0 END), "
+    "SUM(COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)), "
+    "SUM(COALESCE(actual_cost_usd, estimated_cost_usd, 0)), "
+    "MAX(last_activity_at) "
+    "FROM sessions"
+)
+
+
 def _read_session_stats(profile: str) -> Dict[str, Any]:
     """Read READ-ONLY aggregate stats from a profile's state.db sessions table.
 
     Aggregate SELECTs only (COUNT/SUM/MAX). Never touches messages.content,
     system_prompt, or title. Tolerates missing db / locked / missing table
     by returning zeros.
-    
-    FIX: Increased timeout from 0.5s to 2.0s and added comprehensive exception
-    handling to prevent connection leaks (issue #hermes-fd-leak-office3d).
+
+    Uses one cached RO connection per db path and a single SQL statement
+    (v1.0.2) to avoid per-poll fd churn and multi-query lock time.
     """
     result: Dict[str, Any] = {
         "active_sessions": 0,
@@ -101,77 +187,39 @@ def _read_session_stats(profile: str) -> Dict[str, Any]:
     path = _db_path(profile)
     if not os.path.exists(path):
         return result
-    
-    con: Optional[sqlite3.Connection] = None
-    try:
-        uri = "file:" + path + "?mode=ro"
-        # FIX: Increased timeout from 0.5s to 2.0s to reduce race conditions
-        # under high load. Original 0.5s was too aggressive for FTS queries.
-        con = sqlite3.connect(uri, uri=True, timeout=2.0)
-    except Exception:  # FIX: Catch ALL exceptions, not just sqlite3.Error
-        # Connection creation failed — no cleanup needed, return zeros.
+
+    with _db_lock:
+        con = _get_ro_conn_unlocked(path)
+        if con is None:
+            return result
+        try:
+            now = time.time()
+            cur = con.execute(_STATS_SQL, (now - 90.0,))
+            row = cur.fetchone()
+        except Exception:
+            # Connection may be broken (db replaced, locked hard, schema change).
+            _close_ro_conn_unlocked(path)
+            return result
+
+    if not row:
         return result
-    
+    active, opened, tokens, cost, last_act = row
     try:
-        now = time.time()
-        try:
-            cur = con.execute(
-                "SELECT COUNT(*) FROM sessions WHERE last_activity_at IS NOT NULL "
-                "AND last_activity_at >= ?",
-                (now - 90.0,),
-            )
-            row = cur.fetchone()
-            if row and row[0] is not None:
-                result["active_sessions"] = int(row[0])
-        except Exception:  # FIX: Catch all query exceptions
-            pass
-        try:
-            cur = con.execute("SELECT COUNT(*) FROM sessions WHERE ended_at IS NULL")
-            row = cur.fetchone()
-            if row and row[0] is not None:
-                result["open_sessions"] = int(row[0])
-        except Exception:
-            pass
-        try:
-            cur = con.execute(
-                "SELECT SUM(COALESCE(input_tokens,0)+COALESCE(output_tokens,0)) "
-                "FROM sessions"
-            )
-            row = cur.fetchone()
-            if row and row[0] is not None:
-                result["tokens_total"] = int(row[0])
-        except Exception:
-            pass
-        try:
-            cur = con.execute(
-                "SELECT SUM(COALESCE(actual_cost_usd, estimated_cost_usd, 0)) "
-                "FROM sessions"
-            )
-            row = cur.fetchone()
-            if row and row[0] is not None:
-                result["cost_total"] = float(row[0])
-        except Exception:
-            pass
-        try:
-            cur = con.execute("SELECT MAX(last_activity_at) FROM sessions")
-            row = cur.fetchone()
-            if row and row[0] is not None:
-                try:
-                    result["last_session_activity"] = float(row[0])
-                except (TypeError, ValueError):
-                    result["last_session_activity"] = None
-        except Exception:
-            pass
-    finally:
-        # FIX: Unconditional close with comprehensive exception handling.
-        # Catches AttributeError (con is None), SystemError, and all
-        # sqlite3 exceptions. Prevents connection leaks under ANY failure mode.
-        if con is not None:
+        if active is not None:
+            result["active_sessions"] = int(active)
+        if opened is not None:
+            result["open_sessions"] = int(opened)
+        if tokens is not None:
+            result["tokens_total"] = int(tokens)
+        if cost is not None:
+            result["cost_total"] = float(cost)
+        if last_act is not None:
             try:
-                con.close()
-            except Exception:  # Catch ALL exceptions, not just sqlite3.Error
-                pass  # Connection cleanup failed — unavoidable leak, but rare.
-    
+                result["last_session_activity"] = float(last_act)
+            except (TypeError, ValueError):
+                result["last_session_activity"] = None
+    except (TypeError, ValueError):
+        pass
     return result
 
 
@@ -312,9 +360,25 @@ def _read_profile(profile: str) -> Dict[str, Any]:
     return entry
 
 
+def _collect_state() -> List[Dict[str, Any]]:
+    """Synchronous full scan — intended to run off the event loop."""
+    global _state_cache
+    now = time.monotonic()
+    with _state_cache_lock:
+        cached = _state_cache
+        if cached is not None and cached[0] > now:
+            return cached[1]
+
+    payload = [_read_profile(p) for p in _discover_profiles()]
+    with _state_cache_lock:
+        _state_cache = (now + _STATE_TTL_SEC, payload)
+    return payload
+
+
 @router.get("/state")
 async def state() -> List[Dict[str, Any]]:
-    return [_read_profile(p) for p in _discover_profiles()]
+    # Never block the dashboard event loop on SQLite / disk I/O.
+    return await asyncio.to_thread(_collect_state)
 
 
 # Debug-only discovery helper (not routed).

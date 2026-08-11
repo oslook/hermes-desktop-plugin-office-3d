@@ -1114,10 +1114,15 @@ function OfficeStats({ entries }) {
 }
 
 function OfficePage({ ctx }) {
+  // Pause polling while the document is hidden (other tab / minimized).
+  // Canvas rAF already stops on visibilitychange; the query must too,
+  // otherwise we keep opening backend work every 5s for a page nobody sees.
   const query = useQuery({
     queryKey: ['office-3d', 'state'],
     queryFn: () => ctx.rest('/state'),
-    refetchInterval: 5000,
+    refetchInterval: () =>
+      typeof document !== 'undefined' && document.hidden ? false : 5000,
+    refetchOnWindowFocus: true,
   })
 
   let body

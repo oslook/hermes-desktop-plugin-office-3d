@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.2] - 2026-08-11
+
+### Fixed
+- **FD / load hardening** for the dashboard backend and frontend polling path
+  - Cache one read-only SQLite connection per profile `state.db` (serialized under a lock) instead of open/close on every poll
+  - Collapse five aggregate queries into a single `SELECT`
+  - Serve `/state` via `asyncio.to_thread` so SQLite never blocks the FastAPI event loop
+  - Add a 2s in-process response TTL to absorb stacked polls
+  - Pause frontend `refetchInterval` while `document.hidden` (canvas already paused; the query did not)
+
+### Technical Details
+v1.0.1 made connection cleanup exception-safe, but each 5s poll still opened a fresh RO handle for every profile (~4k open/close cycles per hour). That churn drove high transient fd use under load. v1.0.2 keeps steady-state SQLite fds roughly proportional to the number of profiles and stops background polling when the Office page is not visible.
+
 ## [1.0.1] - 2026-08-11
 
 ### Fixed
