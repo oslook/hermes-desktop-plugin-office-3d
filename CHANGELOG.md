@@ -5,6 +5,36 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.3] - 2026-10-22
+
+### Changed
+- **Catalog-ready unified-package layout.** The repo is now one installable folder:
+  `plugin.yaml` + `desktop/plugin.js` + `dashboard/{manifest.json,plugin_api.py}`.
+  The old two-target split (`desktop-plugins/office-3d/` + `plugins/office-3d/dashboard/`)
+  is gone — the Desktop app copies `desktop/plugin.js` into
+  `$HERMES_HOME/desktop-plugins/office-3d/` itself.
+- Added `plugin.yaml` manifest (name, version, description, author, license,
+  `requires_hermes: ">=0.20.0"`, `kind: standalone`, `platforms: [linux, macos]`).
+- Added `__init__.py` (agent half, registers nothing yet) so the package is a proper
+  Hermes plugin: the admission capability probe runs and `hermes plugins doctor` passes.
+- `requires_hermes` corrected to `>=0.20.0` (the unified-package desktop door landed in
+  0.20.0; the README previously claimed 0.17.0+).
+- `install.sh` now copies the single package folder; `install.ps1` was removed (see below).
+- README (EN + zh-CN): new repository-layout section, `hermes plugins install` instructions,
+  and a privacy/no-credentials note.
+- Added a GitHub Actions workflow running the catalog admission gate
+  (`hermes plugins validate`) on push and PR.
+
+### Fixed
+- **Windows safety.** `_pid_alive()` judges profile liveness with `os.kill(pid, 0)`. On
+  Windows every signal other than `CTRL_C_EVENT`/`CTRL_BREAK_EVENT` is routed through
+  `TerminateProcess`, so that call would **kill** the target process (the gateway). The
+  check now refuses to run on Windows and the manifest declares `platforms: [linux, macos]`.
+- README uninstall instructions no longer use `rm -rf "$HERMES_HOME/..."` (the install
+  scanner flagged it as `destructive_home_rm`); use `hermes plugins remove office-3d`.
+- `desktop/plugin.js` header comment no longer claims offline profiles are drawn greyed-out
+  in the lounge (they are not drawn at all — empty desk, dark monitor).
+
 ## [1.0.2] - 2026-08-11
 
 ### Fixed

@@ -29,96 +29,81 @@ English | [中文](./README.zh-CN.md)
 - **Python + FastAPI** — read-only dashboard backend at `/api/plugins/office-3d/`
 - **SQLite** (read-only, stdlib only) — per-profile session / token / cost aggregates
 
+## Repository layout
+
+This repo is a single **unified package** — one installable folder that ships both halves:
+
+```
+plugin.yaml                 # manifest (name, version, description, platforms)
+__init__.py                 # agent half — currently registers nothing (no tools/hooks yet)
+desktop/plugin.js           # desktop half — the canvas office page + sidebar nav
+dashboard/manifest.json     # dashboard backend manifest
+dashboard/plugin_api.py     # FastAPI router -> /api/plugins/office-3d/state
+docs/                       # screenshots
+```
+
+When the folder lands in a `plugins/` root, the Desktop app copies `desktop/plugin.js` into `$HERMES_HOME/desktop-plugins/office-3d/` itself, so one folder is the whole install. The desktop half degrades gracefully (an error, not a crash) when the backend half is disabled.
+
 ## How it works
 
-Three pieces (matching the three layers of a Hermes desktop plugin):
-
-1. **Frontend** — `desktop-plugins/office-3d/plugin.js` — a single ESM file the desktop app loads at runtime (canvas 2D isometric scene; no build step).
-2. **Backend** — `plugins/office-3d/dashboard/plugin_api.py` + `manifest.json` — a FastAPI router mounted at `/api/plugins/office-3d/state` by the dashboard web server. It scans each profile's `gateway_state.json` (process liveness) and `state.db` (session activity + token/cost aggregates).
-3. **Enable flag** — `office-3d` must be listed in `plugins.enabled` in your `config.yaml` before the backend is imported (security gate).
+1. **Desktop half** — `desktop/plugin.js` — a single ESM file the desktop app loads at runtime (canvas 2D isometric scene; no build step).
+2. **Backend half** — `dashboard/plugin_api.py` + `manifest.json` — a FastAPI router mounted at `/api/plugins/office-3d/state` by the dashboard web server. It scans each profile's `gateway_state.json` (process liveness) and `state.db` (session activity + token/cost aggregates).
+3. **Enable flag** — `office-3d` must be listed in `plugins.enabled` in your `config.yaml` before the backend is imported (security gate). `hermes plugins enable office-3d` writes it.
 
 The plugin is portable: `HERMES_HOME` honours `$HERMES_HOME` (falls back to `~/.hermes`), and profiles are discovered by scanning `~/.hermes/profiles/` — no names are hard-coded.
 
 ## Install
 
-### Quick (script)
+### From the catalog (once listed)
+
+```bash
+hermes plugins install office-3d
+hermes plugins enable office-3d
+```
+
+### From this repository
+
+```bash
+hermes plugins install oslook/hermes-desktop-plugin-office-3d
+hermes plugins enable office-3d
+```
+
+### Manual
 
 ```bash
 git clone https://github.com/oslook/hermes-desktop-plugin-office-3d.git
-cd hermes-desktop-plugin-office-3d
+cp -R hermes-desktop-plugin-office-3d "${HERMES_HOME:-$HOME/.hermes}/plugins/office-3d"
+hermes plugins enable office-3d
 ```
 
-**Linux / macOS:**
+`install.sh` does the same thing and honours `$HERMES_HOME`:
 
 ```bash
 bash install.sh
 ```
 
-**Windows (PowerShell):**
-
-```powershell
-.\install.ps1
-```
-
-The script copies the files into your Hermes home, enables the backend, and tells you how to reload. Both honour `HERMES_HOME` (falls back to `~/.hermes`, or `%USERPROFILE%\.hermes` on Windows).
-
-### Manual
-
-**Linux / macOS:**
-
-```bash
-# 1. Frontend
-mkdir -p "${HERMES_HOME:-$HOME/.hermes}/desktop-plugins/office-3d"
-cp desktop-plugins/office-3d/plugin.js "${HERMES_HOME:-$HOME/.hermes}/desktop-plugins/office-3d/"
-
-# 2. Backend
-mkdir -p "${HERMES_HOME:-$HOME/.hermes}/plugins/office-3d/dashboard"
-cp plugins/office-3d/dashboard/plugin_api.py plugins/office-3d/dashboard/manifest.json \
-   "${HERMES_HOME:-$HOME/.hermes}/plugins/office-3d/dashboard/"
-
-# 3. Enable the backend (writes a real YAML list into config.yaml)
-hermes plugins enable office-3d
-```
-
-**Windows (PowerShell):**
-
-```powershell
-$H = if ($env:HERMES_HOME) { $env:HERMES_HOME } else { "$env:USERPROFILE\.hermes" }
-
-# 1. Frontend
-New-Item -ItemType Directory -Force "$H\desktop-plugins\office-3d" | Out-Null
-Copy-Item desktop-plugins\office-3d\plugin.js "$H\desktop-plugins\office-3d\" -Force
-
-# 2. Backend
-New-Item -ItemType Directory -Force "$H\plugins\office-3d\dashboard" | Out-Null
-Copy-Item plugins\office-3d\dashboard\plugin_api.py,plugins\office-3d\dashboard\manifest.json "$H\plugins\office-3d\dashboard\" -Force
-
-# 3. Enable the backend (writes a real YAML list into config.yaml)
-hermes plugins enable office-3d
-```
-
 Then make it take effect:
 
-- **Frontend**: fully quit and reopen the Hermes Desktop app (or ⌘K → **Reload desktop plugins**), then open the **Office** page from the sidebar.
-- **Backend**: restart the dashboard web server so it mounts `/api/plugins/office-3d/`. If you run `hermes dashboard`, stop and start it again. (On a LAN/LaunchAgent setup, restart that service.)
+- **Desktop half**: fully quit and reopen the Hermes Desktop app (or ⌘K → **Reload desktop plugins**), then open the **Office** page from the sidebar.
+- **Backend half**: restart the dashboard web server so it mounts `/api/plugins/office-3d/`. If you run `hermes dashboard`, stop and start it again. (On a LAN/LaunchAgent setup, restart that service.)
 
 ## Requirements
 
-- Hermes Desktop **0.17.0+** — the desktop app is required; the CLI/gateway alone does not load desktop plugins. (Developed on 0.20.0, tested down to 0.17.0.)
+- Hermes Desktop **0.20.0+** — the desktop app is required; the CLI/gateway alone does not load desktop plugins. (Developed on 0.20.0.)
 - The dashboard web server running (it serves `/api/plugins/...`).
+- **Linux or macOS.** Windows is not supported: the backend judges profile liveness with `os.kill(pid, 0)`, and on Windows every signal other than `CTRL_C_EVENT`/`CTRL_BREAK_EVENT` is routed through `TerminateProcess`, which would *kill* the target process (the gateway). The manifest declares `platforms: [linux, macos]` accordingly.
 
 ## Uninstall
 
 ```bash
-hermes plugins disable office-3d
-rm -rf "${HERMES_HOME:-$HOME/.hermes}/desktop-plugins/office-3d"
-rm -rf "${HERMES_HOME:-$HOME/.hermes}/plugins/office-3d"
+hermes plugins remove office-3d
 ```
+
 Then reload desktop plugins / restart the dashboard.
 
 ## Privacy
 
-The backend opens each profile's `state.db` **read-only** and runs only aggregate queries (COUNT/SUM/MAX) over the `sessions` table — session counts, token totals, cost, and last-activity time. It never reads message content, system prompts, or titles.
+The backend opens each profile's `state.db` **read-only** and runs only aggregate queries (COUNT/SUM/MAX) over the `sessions` table — session counts, token totals, cost, and last-activity time. It never reads message content, system prompts, or titles. It makes no network calls and needs no credentials.
 
 ## License
 

@@ -83,6 +83,12 @@ def _pid_alive(pid: Any) -> bool:
     """
     if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
         return False
+    # Windows routes every signal other than CTRL_C_EVENT/CTRL_BREAK_EVENT
+    # through TerminateProcess, so os.kill(pid, 0) would *kill* the target
+    # process (the gateway). The plugin declares platforms: [linux, macos];
+    # refuse the check on Windows rather than risk killing a live process.
+    if os.name == "nt":
+        return False
     try:
         os.kill(pid, 0)
         return True

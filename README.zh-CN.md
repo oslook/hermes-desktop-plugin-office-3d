@@ -29,96 +29,81 @@
 - **Python + FastAPI** — 只读的 dashboard 后端，挂载于 `/api/plugins/office-3d/`
 - **SQLite**（只读，仅标准库）— 各 profile 的会话 / token / 成本聚合
 
+## 仓库结构
+
+本仓库是一个**统一包（unified package）**——一个可安装目录同时带上前后端两半：
+
+```
+plugin.yaml                 # 清单（name / version / description / platforms）
+__init__.py                 # agent 半边 —— 目前不注册任何东西（暂无 tool/hook）
+desktop/plugin.js           # 桌面端半边 —— canvas 办公室页面 + 侧栏导航
+dashboard/manifest.json     # dashboard 后端清单
+dashboard/plugin_api.py     # FastAPI 路由 -> /api/plugins/office-3d/state
+docs/                       # 截图
+```
+
+该目录落到 `plugins/` 根下后，桌面 app 会**自己**把 `desktop/plugin.js` 复制到 `$HERMES_HOME/desktop-plugins/office-3d/`，所以一个目录就是完整安装。后端半边未启用时，桌面半边会优雅降级（报错而非崩溃）。
+
 ## 工作原理
 
-三个部分（对应 Hermes 桌面插件的三层）：
-
-1. **前端** — `desktop-plugins/office-3d/plugin.js` — 桌面 app 运行时加载的单个 ESM 文件（canvas 2D 等距场景，无需编译）。
-2. **后端** — `plugins/office-3d/dashboard/plugin_api.py` + `manifest.json` — 一个 FastAPI 路由，由 dashboard web 服务挂载到 `/api/plugins/office-3d/state`。它扫描每个 profile 的 `gateway_state.json`（进程存活）和 `state.db`（会话活动 + token/成本聚合）。
-3. **启用开关** — 后端被 import 前，`office-3d` 必须出现在 `config.yaml` 的 `plugins.enabled` 里（安全门）。
+1. **桌面半边** — `desktop/plugin.js` — 桌面 app 运行时加载的单个 ESM 文件（canvas 2D 等距场景，无需编译）。
+2. **后端半边** — `dashboard/plugin_api.py` + `manifest.json` — 一个 FastAPI 路由，由 dashboard web 服务挂载到 `/api/plugins/office-3d/state`。它扫描每个 profile 的 `gateway_state.json`（进程存活）和 `state.db`（会话活动 + token/成本聚合）。
+3. **启用开关** — 后端被 import 前，`office-3d` 必须出现在 `config.yaml` 的 `plugins.enabled` 里（安全门）。用 `hermes plugins enable office-3d` 写入。
 
 插件可移植：`HERMES_HOME` 会优先读环境变量 `$HERMES_HOME`（回退 `~/.hermes`），profile 通过扫描 `~/.hermes/profiles/` 动态发现——**不写死任何 profile 名字**。
 
 ## 安装
 
-### 快速安装（脚本）
+### 从 catalog 安装（上架后）
+
+```bash
+hermes plugins install office-3d
+hermes plugins enable office-3d
+```
+
+### 从本仓库安装
+
+```bash
+hermes plugins install oslook/hermes-desktop-plugin-office-3d
+hermes plugins enable office-3d
+```
+
+### 手动安装
 
 ```bash
 git clone https://github.com/oslook/hermes-desktop-plugin-office-3d.git
-cd hermes-desktop-plugin-office-3d
+cp -R hermes-desktop-plugin-office-3d "${HERMES_HOME:-$HOME/.hermes}/plugins/office-3d"
+hermes plugins enable office-3d
 ```
 
-**Linux / macOS：**
+`install.sh` 做同样的事，并遵循 `$HERMES_HOME`：
 
 ```bash
 bash install.sh
 ```
 
-**Windows（PowerShell）：**
-
-```powershell
-.\install.ps1
-```
-
-脚本会把文件复制到你的 Hermes home、启用后端，并提示如何重载。都遵循 `HERMES_HOME`（默认回退到 `~/.hermes`，Windows 为 `%USERPROFILE%\.hermes`）。
-
-### 手动安装
-
-**Linux / macOS：**
-
-```bash
-# 1. 前端
-mkdir -p "${HERMES_HOME:-$HOME/.hermes}/desktop-plugins/office-3d"
-cp desktop-plugins/office-3d/plugin.js "${HERMES_HOME:-$HOME/.hermes}/desktop-plugins/office-3d/"
-
-# 2. 后端
-mkdir -p "${HERMES_HOME:-$HOME/.hermes}/plugins/office-3d/dashboard"
-cp plugins/office-3d/dashboard/plugin_api.py plugins/office-3d/dashboard/manifest.json \
-   "${HERMES_HOME:-$HOME/.hermes}/plugins/office-3d/dashboard/"
-
-# 3. 启用后端（会往 config.yaml 写入真正的 YAML 列表）
-hermes plugins enable office-3d
-```
-
-**Windows（PowerShell）：**
-
-```powershell
-$H = if ($env:HERMES_HOME) { $env:HERMES_HOME } else { "$env:USERPROFILE\.hermes" }
-
-# 1. 前端
-New-Item -ItemType Directory -Force "$H\desktop-plugins\office-3d" | Out-Null
-Copy-Item desktop-plugins\office-3d\plugin.js "$H\desktop-plugins\office-3d\" -Force
-
-# 2. 后端
-New-Item -ItemType Directory -Force "$H\plugins\office-3d\dashboard" | Out-Null
-Copy-Item plugins\office-3d\dashboard\plugin_api.py,plugins\office-3d\dashboard\manifest.json "$H\plugins\office-3d\dashboard\" -Force
-
-# 3. 启用后端（会往 config.yaml 写入真正的 YAML 列表）
-hermes plugins enable office-3d
-```
-
 然后让它生效：
 
-- **前端**：彻底退出并重开 Hermes 桌面 app（或 ⌘K → **Reload desktop plugins**），再从侧栏打开 **Office** 页面。
-- **后端**：重启 dashboard web 服务，让它挂载 `/api/plugins/office-3d/`。如果你用 `hermes dashboard`，停掉再启动即可。（若是 LAN/LaunchAgent 部署，重启对应服务。）
+- **桌面半边**：彻底退出并重开 Hermes 桌面 app（或 ⌘K → **Reload desktop plugins**），再从侧栏打开 **Office** 页面。
+- **后端半边**：重启 dashboard web 服务，让它挂载 `/api/plugins/office-3d/`。如果你用 `hermes dashboard`，停掉再启动即可。（若是 LAN/LaunchAgent 部署，重启对应服务。）
 
 ## 前置要求
 
-- Hermes Desktop **0.17.0+** —— 必须有桌面 app；只有 CLI/gateway 不会加载桌面插件。（在 0.20.0 上开发，向下测到 0.17.0。）
+- Hermes Desktop **0.20.0+** —— 必须有桌面 app；只有 CLI/gateway 不会加载桌面插件。（在 0.20.0 上开发。）
 - dashboard web 服务在运行（它才提供 `/api/plugins/...`）。
+- **仅支持 Linux / macOS。** 不支持 Windows：后端用 `os.kill(pid, 0)` 判断 profile 进程是否存活，而在 Windows 上除 `CTRL_C_EVENT`/`CTRL_BREAK_EVENT` 外的任何信号都会走 `TerminateProcess`，会**直接杀掉**目标进程（即 gateway）。清单里因此声明了 `platforms: [linux, macos]`。
 
 ## 卸载
 
 ```bash
-hermes plugins disable office-3d
-rm -rf "${HERMES_HOME:-$HOME/.hermes}/desktop-plugins/office-3d"
-rm -rf "${HERMES_HOME:-$HOME/.hermes}/plugins/office-3d"
+hermes plugins remove office-3d
 ```
+
 然后重载桌面插件 / 重启 dashboard。
 
 ## 隐私说明
 
-后端以**只读**方式打开每个 profile 的 `state.db`，只对 `sessions` 表跑聚合查询（COUNT/SUM/MAX）——会话数、token 合计、成本、最近活动时间。**不读取消息正文、system prompt 或标题**。
+后端以**只读**方式打开每个 profile 的 `state.db`，只对 `sessions` 表跑聚合查询（COUNT/SUM/MAX）——会话数、token 合计、成本、最近活动时间。**不读取消息正文、system prompt 或标题**。不发起任何网络请求，不需要任何凭据。
 
 ## 许可证
 

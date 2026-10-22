@@ -1,10 +1,15 @@
 #!/usr/bin/env bash
-# office-3d installer — copies the plugin into your Hermes home, enables the
-# backend, and prints how to reload. Portable: honours $HERMES_HOME.
+# office-3d installer — copies this unified package into your Hermes home,
+# enables the backend, and prints how to reload. Portable: honours $HERMES_HOME.
+#
+# The package is a single folder: the Desktop app copies desktop/plugin.js into
+# $HERMES_HOME/desktop-plugins/office-3d/ by itself, so there is nothing to copy
+# there by hand. POSIX only (see README → Requirements).
 set -euo pipefail
 
 HOME_DIR="${HERMES_HOME:-$HOME/.hermes}"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PKG_DIR="$HOME_DIR/plugins/office-3d"
 
 echo "office-3d installer"
 echo "  Hermes home: $HOME_DIR"
@@ -14,20 +19,12 @@ if [ ! -d "$HOME_DIR" ]; then
   exit 1
 fi
 
-# 1. Frontend (desktop plugin ESM)
-FE_DIR="$HOME_DIR/desktop-plugins/office-3d"
-mkdir -p "$FE_DIR"
-cp "$HERE/desktop-plugins/office-3d/plugin.js" "$FE_DIR/plugin.js"
-echo "  ✓ frontend  -> $FE_DIR/plugin.js"
+# 1. The whole unified package (desktop half + dashboard backend + manifest).
+mkdir -p "$PKG_DIR"
+cp -R "$HERE/desktop" "$HERE/dashboard" "$HERE/plugin.yaml" "$PKG_DIR/"
+echo "  ✓ package   -> $PKG_DIR/"
 
-# 2. Backend (dashboard FastAPI router + manifest)
-BE_DIR="$HOME_DIR/plugins/office-3d/dashboard"
-mkdir -p "$BE_DIR"
-cp "$HERE/plugins/office-3d/dashboard/plugin_api.py" "$BE_DIR/plugin_api.py"
-cp "$HERE/plugins/office-3d/dashboard/manifest.json" "$BE_DIR/manifest.json"
-echo "  ✓ backend   -> $BE_DIR/"
-
-# 3. Enable the backend so the dashboard imports it (security gate).
+# 2. Enable the backend so the dashboard imports it (security gate).
 if command -v hermes >/dev/null 2>&1; then
   hermes plugins enable office-3d >/dev/null 2>&1 && echo "  ✓ enabled   -> plugins.enabled += office-3d" \
     || echo "  ! could not run 'hermes plugins enable office-3d' — add 'office-3d' to plugins.enabled in config.yaml manually (must be a YAML list)"
@@ -38,12 +35,12 @@ fi
 cat <<'EOF'
 
 Next steps to make it appear:
-  • Frontend: fully quit and reopen the Hermes Desktop app
-             (or ⌘K → "Reload desktop plugins"), then open the "Office"
-             page from the sidebar.
-  • Backend:  restart the dashboard web server so it mounts
-             /api/plugins/office-3d/  (e.g. stop & start `hermes dashboard`,
-             or restart your dashboard service).
+  • Desktop half: fully quit and reopen the Hermes Desktop app
+                  (or ⌘K → "Reload desktop plugins"), then open the "Office"
+                  page from the sidebar.
+  • Backend half: restart the dashboard web server so it mounts
+                  /api/plugins/office-3d/  (e.g. stop & start `hermes dashboard`,
+                  or restart your dashboard service).
 
 Done.
 EOF

@@ -1,10 +1,11 @@
-// ~/.hermes/desktop-plugins/office-3d/plugin.js
+// desktop/plugin.js — source of the office-3d desktop half. The Desktop app
+// copies this file into ~/.hermes/desktop-plugins/office-3d/plugin.js at install.
 //
 // Office 3D — fake-isometric office view of the Hermes profile gateways.
-// Each profile owns a desk in the WORK zone; when busy (online AND
-// active_agents > 0) the avatar sits at the desk and its hands "type".
-// Idle/online avatars relax in the LOUNGE zone with tea. Offline avatars
-// are greyed out in the lounge and their monitor is dark.
+// Each profile owns a desk in the WORK zone; when busy (a session is active)
+// the avatar sits at the desk and its hands "type". Online-but-idle avatars
+// relax in the LOUNGE zone with tea. Offline profiles are NOT drawn at all:
+// their desk sits empty with a dark monitor and a dimmed name label.
 //
 // Rendering: 2D canvas with an isometric projection. The disk-plugin
 // import whitelist forbids three.js / WebGL; only @hermes/plugin-sdk,

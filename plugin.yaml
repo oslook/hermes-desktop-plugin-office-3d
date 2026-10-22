@@ -1,0 +1,19 @@
+name: office-3d
+label: Office 3D
+version: 1.0.3
+description: >-
+  A live isometric office for Hermes Desktop: every profile is a person at a desk.
+  A profile doing real work sits typing at its desk with a lit terminal screen; an
+  online-but-idle profile relaxes in the lounge with tea; an offline profile leaves
+  an empty desk with a dark monitor. A stat bar aggregates active sessions, tokens
+  and cost across profiles. The backend reads each profile's gateway_state.json and
+  opens its state.db read-only, running aggregate queries only — never message content.
+author: oslook
+license: MIT
+requires_hermes: ">=0.20.0"
+kind: standalone
+# The backend judges profile liveness with os.kill(pid, 0). On Windows every
+# signal other than CTRL_C_EVENT/CTRL_BREAK_EVENT is routed through
+# TerminateProcess, so os.kill(pid, 0) would *kill* the target process (the
+# gateway). The plugin is therefore POSIX-only.
+platforms: [linux, macos]

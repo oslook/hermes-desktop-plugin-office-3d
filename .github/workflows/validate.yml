@@ -1,0 +1,25 @@
+name: Validate plugin (catalog admission gate)
+
+# Runs the same check the plugin-catalog admission CI runs — the
+# NousResearch/hermes-agent `plugin-validate` composite action, which prepares an
+# isolated Hermes checkout and runs `hermes plugins validate <path>` against it.
+#
+# Keep this green before pinning a new sha in the catalog entry.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate with the catalog CI gate
+        uses: NousResearch/hermes-agent/.github/actions/plugin-validate@main
+        with:
+          path: .
+          hermes-ref: main
