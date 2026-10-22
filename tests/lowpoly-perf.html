@@ -1,0 +1,13 @@
+<!doctype html><meta charset="utf-8"><title>Lowpoly real Canvas2D performance</title><canvas id="c" width="900" height="520" style="width:900px;height:520px"></canvas><pre id="out"></pre><script type="module">
+import {drawFrame} from './after.mjs';
+const canvas=document.querySelector('canvas'),c=canvas.getContext('2d'),results=[];
+for(const theme of ['dark','light'])for(const n of [6,40]){
+ document.documentElement.classList.toggle('dark',theme==='dark');
+ const entries=Array.from({length:n},(_,i)=>({profile:'worker-'+i,online:i%3!==2,busy:i%3===0,idle_since:null}));
+ const draw=i=>{drawFrame(canvas,c,entries,i/60,-1);c.getImageData(0,0,1,1)};
+ for(let i=0;i<30;i++)draw(i);
+ const samples=[];for(let i=0;i<180;i++){const t=performance.now();draw(i);samples.push(performance.now()-t)}
+ const sorted=[...samples].sort((a,b)=>a-b);results.push({theme,profiles:n,frames:samples.length,meanMs:samples.reduce((a,b)=>a+b,0)/samples.length,medianMs:sorted[Math.floor(sorted.length/2)],p95Ms:sorted[Math.floor(sorted.length*.95)]});
+}
+window.__perf={userAgent:navigator.userAgent,dpr:devicePixelRatio,canvas:[900,520],note:'real Canvas2D, per-frame getImageData synchronization; 30 warmup + 180 measured frames, mixed busy/idle/offline',results};document.querySelector('#out').textContent=JSON.stringify(window.__perf,null,2);
+</script>

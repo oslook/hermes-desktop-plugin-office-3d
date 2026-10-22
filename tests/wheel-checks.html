@@ -1,0 +1,17 @@
+<!doctype html><meta charset="utf-8"><title>Real React wheel regression</title>
+<style>body{font:16px system-ui}iframe{width:100%;height:700px}pre{white-space:pre-wrap}</style>
+<h1>React DOM + native wheel cancellation</h1><p>Real Chromium/browser WheelEvent dispatch, not physical trackpad or Electron; SDK fixtures.</p><pre id="result">Running…</pre><iframe src="index.html"></iframe>
+<script>
+const frame=document.querySelector('iframe'),pause=()=>new Promise(r=>setTimeout(r,60));
+frame.onload=async()=>{const results=[],w=frame.contentWindow,d=w.document;
+const check=(name,ok,data)=>{results.push({name,ok,...data});if(!ok)throw Error(name)};
+const zoom=()=>d.querySelector('[title="Back to fit (100%)"]').textContent;
+const reset=async()=>{d.querySelector('[title="Back to fit (100%)"]').click();await pause()};
+const fire=(opts={},c=d.querySelector('canvas'))=>{const e=new w.WheelEvent('wheel',{bubbles:true,cancelable:true,deltaY:-120,...opts});c.dispatchEvent(e);return e.defaultPrevented};
+try{await pause();for(const key of ['ctrlKey','metaKey']){await reset();const prevented=fire({[key]:true});await pause();check(key,prevented&&zoom()==='124%',{defaultPrevented:prevented,zoom:zoom()})}
+await reset();const prevented=fire();await pause();check('plain wheel',!prevented&&zoom()==='100%',{defaultPrevented:prevented,zoom:zoom()});
+await reset();fire({ctrlKey:true});fire({ctrlKey:true});await pause();check('burst latest ref',zoom()==='154%',{zoom:zoom()});
+const old=d.querySelector('canvas');w.__layout.set([],false,{isLoading:true});await pause();check('unmount cleanup',!fire({ctrlKey:true},old),{});
+w.__layout.set(w.__layout.demo);await pause();const restored=fire({metaKey:true});await pause();check('remount once',restored&&zoom()==='124%',{defaultPrevented:restored,zoom:zoom()});
+window.__results={ok:true,results};}catch(e){window.__results={ok:false,results,errors:[String(e)]}}document.querySelector('#result').textContent=JSON.stringify(window.__results,null,2)};
+</script>

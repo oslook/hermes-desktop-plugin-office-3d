@@ -60,7 +60,20 @@ function iso(x, y, z, scale) {
 function hexToRgb(hex) {
   if (!hex || typeof hex !== 'string') return null
   let h = hex.trim()
-  if (h[0] !== '#') return null
+  // Accept rgb()/rgba() as well as #hex. The palette mixes both — e.g. a sofa
+  // base of `shade(accent, -0.4)` is an "rgb(...)" string — and when this only
+  // understood #hex the whole shading chain silently no-op'd, leaving the object
+  // painted in ONE flat colour (the sofa read as a plain slab for exactly this
+  // reason: every face of it ended up the same rgb()).
+  if (h[0] !== '#') {
+    const m = /^rgba?\(\s*([0-9.]+)\s*,\s*([0-9.]+)\s*,\s*([0-9.]+)/i.exec(h)
+    if (!m) return null
+    const r = Math.round(parseFloat(m[1]))
+    const g = Math.round(parseFloat(m[2]))
+    const b = Math.round(parseFloat(m[3]))
+    if ([r, g, b].some((v) => Number.isNaN(v))) return null
+    return { r, g, b }
+  }
   if (h.length === 4) {
     h = '#' + h[1] + h[1] + h[2] + h[2] + h[3] + h[3]
   }
@@ -295,17 +308,266 @@ function drawIsoDisc(c, ox, oy, x, y, z, radius, scale, fill, stroke) {
   }
 }
 
-function drawSphere(c, ox, oy, x, y, z, radius, scale, fill, stroke) {
-  const [cx, cy] = iso(x, y, z, scale)
+// ---------------------------------------------------------------------------
+// Volumetric figure helpers.
+//
+// Human figures use a restrained set of upper-left-lit polygon planes. The
+// cylinder/disc helpers remain unchanged for furniture and cups; only the
+// dedicated figure helpers below draw anatomical forms. Body points stay in
+// world coordinates until projected, so rendering does not alter pose geometry.
+// ---------------------------------------------------------------------------
+
+// World (x, y, z) -> absolute screen point for the frame's transform.
+function screenPt(ox, oy, x, y, z, scale) {
+  const [px, py] = iso(x, y, z, scale)
+  return [ox + px, oy + py]
+}
+
+function fillEllipse(c, cx, cy, rx, ry, style) {
+  if (!(rx > 0)) return
+  c.save()
+  c.translate(cx, cy)
+  c.scale(1, ry / rx)
   c.beginPath()
-  c.arc(ox + cx, oy + cy, radius * scale, 0, Math.PI * 2)
-  c.fillStyle = fill
+  c.arc(0, 0, rx, 0, Math.PI * 2)
+  c.restore()
+  c.fillStyle = style
   c.fill()
-  if (stroke) {
-    c.strokeStyle = stroke
+}
+
+// Soft elliptical contact shadow on the ground under a figure — the single
+// cheapest cue that a body is standing on the floor rather than floating.
+function softShadow(c, ox, oy, x, y, rWorld, scale, ink, aMax) {
+  const [cx, cy] = screenPt(ox, oy, x, y, 0.012, scale)
+  const rx = rWorld * scale
+  if (!(rx > 0.5)) return
+  const ry = rx * (ISO_Y / ISO_X)
+  const rgb = hexToRgb(ink) || { r: 0, g: 0, b: 0 }
+  const col = (a) => 'rgba(' + rgb.r + ', ' + rgb.g + ', ' + rgb.b + ', ' + a + ')'
+  const g = c.createRadialGradient(cx, cy, 0, cx, cy, rx)
+  g.addColorStop(0, col(aMax))
+  g.addColorStop(0.55, col(aMax * 0.5))
+  g.addColorStop(1, col(0))
+  c.save()
+  c.translate(cx, cy)
+  c.scale(1, ry / rx)
+  c.beginPath()
+  c.arc(0, 0, rx, 0, Math.PI * 2)
+  c.restore()
+  c.fillStyle = g
+  c.fill()
+}
+
+// Vertical cylinder from z0 (bottom) to z1 (top), centred on (x, y). Rounded
+// caps + a left-lit side wall read as a limb/torso, unlike a hard box.
+function drawCylinder(c, ox, oy, x, y, z0, z1, r, scale, base) {
+  const rx = r * scale
+  if (!(rx > 0.4)) return
+  const [cx, yTop] = screenPt(ox, oy, x, y, z1, scale)
+  const [, yBot] = screenPt(ox, oy, x, y, z0, scale)
+  const ry = rx * (ISO_Y / ISO_X)
+  // Bottom cap (in shadow) — its front half peeks below the body.
+  fillEllipse(c, cx, yBot, rx, ry, shade(base, -0.34))
+  // Side wall: highlight band just left of centre, deep shadow on the right.
+  const g = c.createLinearGradient(cx - rx, 0, cx + rx, 0)
+  g.addColorStop(0.0, shade(base, -0.20))
+  g.addColorStop(0.28, shade(base, 0.20))
+  g.addColorStop(0.60, shade(base, 0.0))
+  g.addColorStop(1.0, shade(base, -0.42))
+  c.fillStyle = g
+  c.fillRect(cx - rx, yTop, rx * 2, Math.max(0, yBot - yTop))
+  // Top cap: rim-lit like a surface facing the light.
+  const gt = c.createLinearGradient(cx - rx, yTop - ry, cx + rx, yTop + ry)
+  gt.addColorStop(0, shade(base, 0.34))
+  gt.addColorStop(1, shade(base, 0.02))
+  fillEllipse(c, cx, yTop, rx, ry, gt)
+}
+
+// An isometric box with per-face GRADIENTS and only the lit top-front edges
+// highlighted, instead of flat fills plus a hard 1px outline all the way round —
+// that outline is what made the furniture read as a wireframe toy. Light comes
+// from the upper-left, as everywhere else in this scene.
+function drawIsoBoxSoft(c, ox, oy, x, y, z, w, d, h, scale, base, opts) {
+  const o = opts || {}
+  const [tlx, tly] = iso(x, y, z + h, scale)
+  const [trx, trY] = iso(x + w, y, z + h, scale)
+  const [brx, bry] = iso(x + w, y + d, z + h, scale)
+  const [blx, bly] = iso(x, y + d, z + h, scale)
+  const [tblx, tbly] = iso(x, y + d, z, scale)
+  const [tbrx, tbry] = iso(x + w, y + d, z, scale)
+  const [tfrx, tfry] = iso(x + w, y, z, scale)
+  const ax = (v) => ox + v
+
+  // Right face (+x): brightest along its top edge, falling off toward the floor.
+  const gr = c.createLinearGradient(0, oy + trY, 0, oy + tbry)
+  gr.addColorStop(0, shade(base, -0.12))
+  gr.addColorStop(1, shade(base, -0.44))
+  c.beginPath()
+  c.moveTo(ax(trx), oy + trY)
+  c.lineTo(ax(brx), oy + bry)
+  c.lineTo(ax(tbrx), oy + tbry)
+  c.lineTo(ax(tfrx), oy + tfry)
+  c.closePath()
+  c.fillStyle = gr
+  c.fill()
+
+  // Left face (+y): the shaded side, darkest at the bottom.
+  const gl = c.createLinearGradient(0, oy + bly, 0, oy + tbly)
+  gl.addColorStop(0, shade(base, -0.36))
+  gl.addColorStop(1, shade(base, -0.06))
+  c.beginPath()
+  c.moveTo(ax(brx), oy + bry)
+  c.lineTo(ax(blx), oy + bly)
+  c.lineTo(ax(tblx), oy + tbly)
+  c.lineTo(ax(tbrx), oy + tbry)
+  c.closePath()
+  c.fillStyle = gl
+  c.fill()
+
+  // Top face: lit from the far corner, easing off toward the viewer.
+  const lift = o.top == null ? 0.26 : o.top
+  const gt = c.createLinearGradient(ax(tlx), oy + tly, ax(brx), oy + bry)
+  gt.addColorStop(0, shade(base, lift))
+  gt.addColorStop(1, shade(base, lift - 0.20))
+  c.beginPath()
+  c.moveTo(ax(tlx), oy + tly)
+  c.lineTo(ax(trx), oy + trY)
+  c.lineTo(ax(brx), oy + bry)
+  c.lineTo(ax(blx), oy + bly)
+  c.closePath()
+  c.fillStyle = gt
+  c.fill()
+
+  // Edge light on the two top-front edges only — the rim a real object catches
+  // from above, rather than an outline everywhere.
+  if (o.edge !== false) {
+    c.save()
+    c.strokeStyle = 'rgba(255, 255, 255, ' +
+      (o.edgeAlpha == null ? 0.12 : o.edgeAlpha) + ')'
     c.lineWidth = 1
+    c.beginPath()
+    c.moveTo(ax(tlx), oy + tly)
+    c.lineTo(ax(trx), oy + trY)
+    c.lineTo(ax(brx), oy + bry)
     c.stroke()
+    c.restore()
   }
+}
+
+// A horizontal disc with a radial gradient: cushion tops, plinths, tabletops.
+function drawIsoDiscSoft(c, ox, oy, x, y, z, radius, scale, base, opts) {
+  const o = opts || {}
+  const [cx, cy] = screenPt(ox, oy, x, y, z, scale)
+  const rx = radius * scale
+  if (!(rx > 0.4)) return
+  const ry = rx * (ISO_Y / ISO_X)
+  const lift = o.top == null ? 0.22 : o.top
+  const g = c.createRadialGradient(
+    cx - rx * 0.30, cy - ry * 0.30, rx * 0.10,
+    cx, cy, rx,
+  )
+  g.addColorStop(0, shade(base, lift))
+  g.addColorStop(1, shade(base, -0.20))
+  fillEllipse(c, cx, cy, rx, ry, g)
+}
+
+// A limb segment (arm/leg): round-capped stroke plus a thin lit highlight so
+// the stroke reads as a cylinder rather than a flat ribbon. `bend` nudges the
+// control point (px) to suggest an elbow/knee.
+// Human-only faceted primitives. Furniture keeps its original cylinder/box helpers.
+function figurePoly(c, points, ink) {
+  c.beginPath(); points.forEach((p,i)=>i?c.lineTo(...p):c.moveTo(...p))
+  c.closePath(); c.fillStyle=ink; c.fill()
+}
+function drawLimb(c, p0, p1, width, base, bend) {
+  if (!(width > 0.5)) return
+  const dx=p1[0]-p0[0],dy=p1[1]-p0[1],len=Math.hypot(dx,dy)||1
+  const n=[-dy/len,dx/len],u=[dx/len,dy/len]
+  const at=(p,w,t=0)=>[p[0]+n[0]*w+u[0]*t,p[1]+n[1]*w+u[1]*t]
+  const a=at(p0,width*.50,-width*.12),b=at(p0,-width*.50,-width*.12)
+  const d=at(p1,width*.34,width*.10),e=at(p1,-width*.34,width*.10)
+  figurePoly(c,[a,b,e,d],shade(base,-.12))
+  figurePoly(c,[a,p0,p1,d],shade(base,.12))
+}
+function drawPalm(c, p, width, skin, grip=false) {
+  const x=p[0],y=p[1],w=width
+  figurePoly(c,[[x-w*.55,y-w*.28],[x-w*.18,y-w*.52],[x+w*.45,y-w*.32],
+    [x+w*.55,y+w*.18],[x+w*.10,y+w*.46],[x-w*.45,y+w*.32]],skin)
+  figurePoly(c,[[x-w*.55,y-w*.28],[x-w*.18,y-w*.52],[x+w*.45,y-w*.32],
+    [x+w*.10,y]],shade(skin,.12))
+  if(grip)figurePoly(c,[[x-w*.5,y],[x-w*.18,y-w*.12],[x+w*.08,y+w*.12],
+    [x-w*.12,y+w*.35]],shade(skin,-.16))
+}
+function drawFigureBand(c,ox,oy,x,y,z0,z1,r,scale,ink) {
+  const a=screenPt(ox,oy,x,y,z1,scale),b=screenPt(ox,oy,x,y,z0,scale),w=r*scale
+  figurePoly(c,[[a[0]-w,a[1]],[a[0]+w*.65,a[1]-w*.22],[a[0]+w,a[1]+w*.25],
+    [b[0]+w*.80,b[1]],[b[0],b[1]+w*.25],[b[0]-w,b[1]]],ink)
+  figurePoly(c,[[a[0]+w*.25,a[1]],[a[0]+w,a[1]+w*.25],[b[0]+w*.80,b[1]],
+    [b[0]+w*.25,b[1]+w*.18]],shade(ink,-.18))
+}
+function drawFigureTorso(c,ox,oy,x,y,z0,z1,r,scale,cloth,pants) {
+  const [cx,yt]=screenPt(ox,oy,x,y,z1,scale),[,yb]=screenPt(ox,oy,x,y,z0,scale)
+  const w=r*scale,h=yb-yt
+  const pt=(a,b)=>[cx+a*w,yt+b*h]
+  // Trapezoidal shoulders, chest, narrower waist, seated pelvic shelf.
+  figurePoly(c,[pt(-.42,-.10),pt(.42,-.10),pt(1,.10),pt(.78,.83),
+    pt(.92,1.04),pt(.40,1.18),pt(-.75,1.10),pt(-.84,.78),pt(-1,.12)],cloth)
+  figurePoly(c,[pt(-.42,-.10),pt(.42,-.10),pt(1,.10),pt(.15,.24),pt(-1,.12)],shade(cloth,.18))
+  figurePoly(c,[pt(.15,.24),pt(1,.10),pt(.78,.83),pt(.92,1.04),pt(.30,1.10)],shade(cloth,-.20))
+  figurePoly(c,[pt(-.84,.78),pt(.78,.83),pt(.92,1.04),pt(.40,1.18),pt(-.75,1.10)],pants)
+}
+
+// A shaded head: a radial-gradient sphere with the hair cut away around a face
+// oval, plus (only once the head is a few px across) eyes, catch-lights and a
+// mouth. `blink` in [0,1] squashes the eyes shut.
+//
+// `facing` is the SCREEN-space direction the face points along, because the two
+// poses look in genuinely different directions:
+//   [0.19, 0.98]  — nearly straight down = out at the viewer. The lounge sitter
+//                   relaxes facing the room, so we see the face.
+//   [0.82, -0.58] — up-right = along -y in world = at the desk. The sitter works
+//                   facing the monitor, so we see the BACK of the head: the hair
+//                   stays a full cap and only a sliver of cheek shows. (The
+//                   viewer looks from screen-down, so "up-right" is away.)
+// Facial features are only drawn when the face is turned toward the viewer;
+// that single gate is what makes each pose read correctly.
+// Head facing per pose, in SCREEN space (see drawHead). A unit step along world
+// -y projects to (0.816, -0.577) — right and up — so the desk sitter, who faces
+// the monitor, is seen from behind. The lounge sitter faces out at the viewer.
+const DESK_FACING = [0.816, -0.577]
+const LOUNGE_FACING = [0.19, 0.98]
+const FACE_TV_MIN = 0.45
+
+// Upright chamfered skull and jaw: broad planes, no random triangulation.
+// Mouth remains at +.85r screen-y, calibrated to the actual tea rim trajectory.
+function drawHead(c,cx,cy,r,opts) {
+  if(!(r>.6))return
+  const f=opts.facing||LOUNGE_FACING, l=Math.hypot(...f)||1,fx=f[0]/l,fy=f[1]/l
+  const face=opts.face!==false&&fy>FACE_TV_MIN
+  const pt=(x,y)=>[cx+x*r,cy+y*r], poly=(a,ink)=>figurePoly(c,a.map(p=>pt(...p)),ink)
+  const skull=[[-.65,-.88],[.24,-1],[.77,-.66],[.94,-.12],[.78,.54],[.38,.92],[-.20,1],[-.72,.63],[-.93,.03],[-.87,-.48]]
+  poly(skull,opts.hair)
+  poly([[-.65,-.88],[.24,-1],[.77,-.66],[.13,-.42],[-.87,-.48]],opts.hairLit)
+  if(face){
+    poly([[-.66,-.34],[-.25,-.48],[.28,-.32],[.69,-.40],[.78,.23],
+      [.59,.72],[.28,.96],[-.18,.98],[-.57,.69],[-.76,.16]],opts.skin)
+    poly([[.48,-.35],[.69,-.40],[.78,.23],[.59,.72],[.28,.96],[.40,.41]],shade(opts.skin,-.14))
+    poly([[-.66,-.34],[-.25,-.48],[.28,-.32],[.04,-.08],[-.70,.12]],shade(opts.skin,.12))
+  }else{
+    poly([[.77,-.66],[.94,-.12],[.78,.54],[.56,.70],[.63,.10]],opts.skin)
+    poly([[.60,.29],[.75,.20],[.78,.43],[.64,.58]],shade(opts.skin,-.12))
+  }
+  if(r<7||!face)return
+  const ex=fx*r*.26,ey=fy*r*.26,sep=r*.29*Math.min(1,Math.abs(fy))
+  const blink=opts.blink==null?1:opts.blink
+  for(const side of [-1,1]){
+    const x=cx+ex+side*sep,y=cy+ey
+    figurePoly(c,[[x-r*.09,y-r*.065*blink],[x+r*.09,y-r*.04*blink],
+      [x+r*.08,y+r*.065*blink],[x-r*.085,y+r*.06*blink]],opts.eyeColor||'#1f242c')
+  }
+  if(r>=12)poly([[fx*.26,.37],[fx*.26-.065,.53],[fx*.26+.08,.53]],shade(opts.skin,-.12))
+  c.beginPath();c.moveTo(cx+ex-r*.15,cy+r*.85);c.lineTo(cx+ex+r*.15,cy+r*.85)
+  c.strokeStyle=shade(opts.skinShadow||opts.skin,-.30);c.lineWidth=Math.max(.7,r*.035);c.lineCap='butt';c.stroke()
 }
 
 // ---------------------------------------------------------------------------
@@ -325,9 +587,75 @@ const WORK_PAD = 3.3
 const LOUNGE_DEPTH = 6.0 // lounge zone depth (its furniture is a fixed size)
 const LOUNGE_GAP = 0.5   // gap between the work floor and the lounge floor
 const LOUNGE_W = 11      // minimum scene width, so the lounge ring always fits
+// The lounge GROUP — ring of stools + coffee table + sofa — is a fixed size. Its
+// own bounding box, measured from the anchor sceneLayout hands out, spans
+// x [-0.3, +3.8] and y [-0.1, +4.55], so its centre sits at these offsets.
+// sceneLayout therefore anchors the group at the ZONE's centre instead of at the
+// work floor's left edge: pinning it left crammed the whole group into the first
+// third of an 11-wide zone and left the rest of the floor empty.
+const LOUNGE_GROUP_CX = 2.05
+const LOUNGE_GROUP_CY = 2.225
 const MAX_COLS = 5       // widest desk grid
 const MIN_SCALE = 10     // smallest scene scale that still fits a huge install
 const MAX_SCALE = 64
+
+// ---------------------------------------------------------------------------
+// View transform (zoom + pan).
+//
+// `zoom` is a MULTIPLIER on the fit-to-canvas scale, so 1 = "fit the whole
+// office" and the default look is byte-identical to before this feature. The
+// transform is a pure function of (canvas size, layout, zoom, pan) precisely so
+// the wheel/pan handlers and drawFrame can never disagree about where a desk
+// landed — a click is hit-tested against the very transform the pixels came
+// from (drawFrame hands it back).
+// ---------------------------------------------------------------------------
+const VIEW_ZOOM_MIN = 0.4
+const VIEW_ZOOM_MAX = 6
+
+function clampZoom(z) {
+  if (!Number.isFinite(z)) return 1
+  return Math.max(VIEW_ZOOM_MIN, Math.min(VIEW_ZOOM_MAX, z))
+}
+
+function frameTransform(cssW, cssH, L, zoom, panX, panY) {
+  const margin = 24
+  const sceneH = Math.max(120, cssH)
+  const scaleFit = Math.min(
+    (cssW - margin * 2) / L.projW,
+    (sceneH - margin * 2) / L.projH,
+  )
+  // Clamp the FIT to a sane band (a 40-profile install must not vanish, a tiny
+  // one must not fill the screen), then let the user's zoom multiply it freely.
+  const base = Math.max(MIN_SCALE, Math.min(MAX_SCALE, scaleFit))
+  const z = clampZoom(zoom)
+  const scale = base * z
+  const leftMost = (0 - L.worldH) * ISO_X * scale
+  const topMost = -3.0 * scale
+  const px = Number.isFinite(panX) ? panX : 0
+  const py = Number.isFinite(panY) ? panY : 0
+  const ox = margin - leftMost +
+    Math.max(0, (cssW - margin * 2 - L.projW * scale) / 2) + px
+  const oy = margin - topMost + py
+  return { ox, oy, scale, fit: scaleFit, zoom: z }
+}
+
+// Zoom to `nextZoom` while keeping the world point under (ax, ay) pinned to
+// that screen position — the standard "zoom at the cursor" feel. Both the
+// before and after transforms come from frameTransform, so the anchoring is
+// exact rather than approximate.
+function zoomAbout(cssW, cssH, L, view, nextZoom, ax, ay) {
+  const before = frameTransform(cssW, cssH, L, view.zoom, view.panX, view.panY)
+  const nx = clampZoom(nextZoom)
+  const base = frameTransform(cssW, cssH, L, nx, 0, 0)
+  const k = before.scale === 0 ? 1 : base.scale / before.scale
+  const cx = Number.isFinite(ax) ? ax : cssW / 2
+  const cy = Number.isFinite(ay) ? ay : cssH / 2
+  return {
+    zoom: nx,
+    panX: cx - (cx - before.ox) * k - base.ox,
+    panY: cy - (cy - before.oy) * k - base.oy,
+  }
+}
 
 // Near-square desk grid for `count` desks: 6 -> 3x2 (unchanged), 9 -> 3x3,
 // 12 -> 4x3, 25 -> 5x5.
@@ -359,9 +687,12 @@ function sceneLayout(count) {
     loungeY0,
     projW: (worldW + worldH) * ISO_X,
     projH: (worldW + worldH) * ISO_Y + 3.0,
-    // Lounge furniture is anchored relative to the work floor, so the zone
-    // follows the grid instead of sitting at a hard-coded y.
-    lounge: { x: WORK_ORIGIN.x, y: loungeY0 + 1.5 },
+    // Lounge furniture is anchored so the GROUP is centred in the lounge zone
+    // (see LOUNGE_GROUP_C*), instead of hanging off the work floor's left edge.
+    lounge: {
+      x: worldW / 2 - LOUNGE_GROUP_CX,
+      y: loungeY0 + LOUNGE_DEPTH / 2 - LOUNGE_GROUP_CY,
+    },
   }
 }
 
@@ -470,14 +801,12 @@ function buildPalette(canvas) {
       floorLoungeFill: 'rgba(20, 24, 32, 0.09)',
       // Furniture (lighter greys for chair + monitor body on light bg).
       chairTop: '#c3c8d0',
-      chairLeft: '#b0b6c0',
-      chairRight: '#a0a6b0',
       chairBackTop: '#cfd4dc',
-      chairBackLeft: '#bcc2cb',
-      chairBackRight: '#a9afb8',
-      monitorStandTop: '#b8bcc4',
-      monitorStandLeft: '#a6abb4',
-      monitorStandRight: '#969ba4',
+      chairPost: '#9aa1ab',
+      chairBase: '#aeb4be',
+      monitorShell: '#c6cbd3',
+      keyboard: '#b6bcc6',
+      deskWood: '#c9a876',
       screenOff: '#dfe3e8',
       screenOffGlow: '#e8ecf1',
       // Screen ON base/glow — cool but LIGHT-tinted so the terminal-green
@@ -492,6 +821,15 @@ function buildPalette(canvas) {
       pillColor: 'rgba(255, 255, 255, 0.85)',
       pillBorder: 'rgba(0, 0, 0, 0.15)',
       offlineNameColor: '#9aa1ab',
+      // Figure tones (skin/hair/trousers are neutral so the profile-colored
+      // clothes still carry identity; only the person is ever profile-hued).
+      skin: '#f2c69d',
+      skinShadow: '#cf9a63',
+      hair: '#3b2c22',
+      hairLit: '#5b4433',
+      trouser: '#7d879a',
+      shoe: '#40464f',
+      shadowInk: '#232a36',
     }
   }
   // DARK (default; keeps existing look).
@@ -507,14 +845,12 @@ function buildPalette(canvas) {
     floorWorkFill: rgba(accentDark, 0.04),
     floorLoungeFill: rgba(accentDark, 0.07),
     chairTop: '#3a3f45',
-    chairLeft: '#2c3035',
-    chairRight: '#232629',
     chairBackTop: '#43484e',
-    chairBackLeft: '#333840',
-    chairBackRight: '#282c31',
-    monitorStandTop: '#333',
-    monitorStandLeft: '#222',
-    monitorStandRight: '#111',
+    chairPost: '#22262b',
+    chairBase: '#2a2f36',
+    monitorShell: '#2f353d',
+    keyboard: '#3c434c',
+    deskWood: '#9c7a52',
     screenOff: '#151719',
     screenOffGlow: '#1c1f22',
     screenOnBase: '#263d47',
@@ -525,6 +861,14 @@ function buildPalette(canvas) {
     pillColor: 'rgba(8, 10, 14, 0.9)',
     pillBorder: null,
     offlineNameColor: '#5a5f66',
+    // Figure tones — see the light-mode note above.
+    skin: '#e9b98f',
+    skinShadow: '#a9713f',
+    hair: '#241d1a',
+    hairLit: '#3f342a',
+    trouser: '#39414e',
+    shoe: '#22262c',
+    shadowInk: '#000000',
   }
 }
 
@@ -561,7 +905,7 @@ function drawSelection(c, ox, oy, scale, slot, accent) {
 // ---------------------------------------------------------------------------
 // Frame draw.
 // ---------------------------------------------------------------------------
-function drawFrame(canvas, c, entries, tSec, selectedIndex) {
+function drawFrame(canvas, c, entries, tSec, selectedIndex, view) {
   if (!Array.isArray(entries)) entries = []
   const P = buildPalette(canvas)
   const bg = P.bg
@@ -575,10 +919,6 @@ function drawFrame(canvas, c, entries, tSec, selectedIndex) {
   const cssW = canvas.clientWidth || 640
   const cssH = canvas.clientHeight || 400
 
-  // Stats moved to DOM chips below the canvas; no in-canvas bar reserve.
-  const BOTTOM_BAR_H = 0
-  const sceneH = Math.max(120, cssH - BOTTOM_BAR_H)
-
   c.setTransform(1, 0, 0, 1, 0, 0)
   c.clearRect(0, 0, canvas.width, canvas.height)
   c.scale(dpr, dpr)
@@ -587,20 +927,21 @@ function drawFrame(canvas, c, entries, tSec, selectedIndex) {
   c.fillStyle = bg
   c.fillRect(0, 0, cssW, cssH)
 
-  // Size the scene for THIS many desks, then fit it into the canvas.
+  // Size the scene for THIS many desks, then fit it (and apply the user's zoom +
+  // pan) into the canvas. frameTransform is pure so the wheel handler computes
+  // the identical transform.
   const L = sceneLayout(Array.isArray(entries) ? entries.length : 0)
-  const margin = 24
-  const scaleFit = Math.min(
-    (cssW - margin * 2) / L.projW,
-    (sceneH - margin * 2) / L.projH,
+  const T = frameTransform(
+    cssW,
+    cssH,
+    L,
+    view ? view.zoom : 1,
+    view ? view.panX : 0,
+    view ? view.panY : 0,
   )
-  const scale = Math.max(MIN_SCALE, Math.min(MAX_SCALE, scaleFit))
-
-  // Origin: shift so leftmost projected x sits at the margin.
-  const leftMost = (0 - L.worldH) * ISO_X * scale
-  const topMost = -3.0 * scale
-  const ox = margin - leftMost + Math.max(0, (cssW - margin * 2 - L.projW * scale) / 2)
-  const oy = margin - topMost
+  const ox = T.ox
+  const oy = T.oy
+  const scale = T.scale
 
   // Zone floors
   drawFloor(c, ox, oy, 0, 0, L.worldW, L.workH, scale, {
@@ -664,8 +1005,8 @@ function drawFrame(canvas, c, entries, tSec, selectedIndex) {
   // -------------------------------------------------------------------------
 
   // Hand the transform back so a click can be hit-tested against exactly the
-  // projection these pixels were drawn with.
-  return { ox, oy, scale, layout: L }
+  // projection these pixels were drawn with (zoom + pan included).
+  return { ox, oy, scale, zoom: T.zoom, layout: L }
 }
 
 // Draws a slim status strip at the very bottom of the canvas showing
@@ -790,57 +1131,264 @@ function drawFloor(c, ox, oy, x, y, w, d, scale, style) {
   c.stroke()
 }
 
+// Lounge furniture footprint, in ONE place: drawLounge draws from these numbers
+// and the test harness asserts on them (the group has to stay inside the zone
+// and must not collide with the ring of stools).
+function loungeLayout(lounge) {
+  return {
+    sx: lounge.x + 0.6,          // sofa
+    sy: lounge.y + 3.55,         // 3.55 clears the stool ring's south slot
+    sofaW: 3.2,
+    sofaD: 1.0,
+    tx: lounge.x + 1.1,          // coffee table
+    ty: lounge.y + 0.9,
+    tw: 2.0,
+    td: 1.0,
+  }
+}
+
+// World-space upholstery dimensions. Screen-top extrema at different x/y are
+// NOT a height constraint: the far arm naturally projects above the near back.
+function sofaDims() {
+  const seatZ = 0.45
+  const legH = 0.12
+  return {
+    armW: 0.28,
+    legH,
+    seatZ,
+    backTop: seatZ + 0.57,   // normal back, not a screen-bbox-driven high wall
+    armTop: seatZ + 0.25,
+  }
+}
+
+// The sofa, in its own function so a diagnostic can draw each part in a distinct
+// colour. The back stays on LARGE y, facing the coffee table at smaller y.
+// Paint far (-x) arm, seat/seams, near (+y) back, then near (+x) arm.
+// The rear upholstery is a single panel, not the inside cushion divisions.
+function drawSofa(c, ox, oy, scale, P, LL, tint) {
+  const t = tint || {}
+  const sofa = t.sofa || (P.mode === 'light' ? '#b9c2cf' : shade(P.accent, -0.4))
+  const backInk = t.back || shade(sofa, -0.26)
+  const armInk = t.arm || shade(sofa, -0.06)
+  const legInk = t.leg || shade(sofa, -0.48)
+  const seamInk = t.seam || shade(sofa, -0.52)
+  const sx = LL.sx
+  const sy = LL.sy
+  const sofaW = LL.sofaW
+  const sofaD = LL.sofaD
+  const D = sofaDims()
+  const armW = D.armW
+  const legH = D.legH
+  const seatZ = D.seatZ
+  const backTop = D.backTop
+  const armTop = D.armTop
+  const backY = sy + sofaD - 0.22
+  const backX = sx + armW
+  const backW = sofaW - armW * 2
+  softShadow(c, ox, oy, sx + sofaW / 2, sy + sofaD / 2, 1.95, scale,
+    P.shadowInk || '#000000', 0.18)
+  // Legs first, so the frame and arms paint over their tops.
+  for (const fx of [0.24, sofaW - 0.24]) {
+    for (const fy of [0.24, sofaD - 0.24]) {
+      drawCylinder(c, ox, oy, sx + fx, sy + fy, 0, legH, 0.062, scale, legInk)
+    }
+  }
+  // Far arm first: its rear end must disappear behind the back, not cover it.
+  drawIsoBoxSoft(c, ox, oy, sx, sy, legH, armW, sofaD, armTop - legH, scale,
+    t.farArm || armInk, { top: 0.16 })
+  // Frame between the arms, lifted on the legs (no coincident arm surfaces).
+  drawIsoBoxSoft(c, ox, oy, backX, sy, legH, backW, sofaD, seatZ - legH, scale, sofa,
+    { top: 0.14 })
+  // Seat divisions belong on the seat only, BEFORE the opaque backrest.
+  c.save()
+  c.strokeStyle = seamInk
+  c.lineWidth = Math.max(1, scale * 0.013)
+  const seg = (a, b) => {
+    const [a0x, a0y] = iso(a[0], a[1], a[2], scale)
+    const [a1x, a1y] = iso(b[0], b[1], b[2], scale)
+    c.beginPath()
+    c.moveTo(ox + a0x, oy + a0y)
+    c.lineTo(ox + a1x, oy + a1y)
+    c.stroke()
+  }
+
+  for (let i = 1; i < 3; i++) {
+    const bx = backX + (backW * i) / 3
+    seg([bx, sy, seatZ], [bx, backY, seatZ])
+  }
+  c.restore()
+  // Near back masks hidden seat lines and the far arm's rear corner.
+  drawIsoBoxSoft(c, ox, oy, backX, backY, seatZ, backW, 0.22, backTop - seatZ, scale,
+    backInk, { top: 0.08 })
+  // Near arm is the only arm that overlaps the backrest's near end.
+  drawIsoBoxSoft(c, ox, oy, sx + sofaW - armW, sy, legH, armW, sofaD, armTop - legH,
+    scale, t.nearArm || armInk, { top: 0.16 })
+}
+
 function drawLounge(c, ox, oy, scale, stroke, tint, accent, tSec, palette, lounge) {
   const P = palette || {}
   const isLight = P.mode === 'light'
   // Sofa fabric base: a muted blue-grey in dark, a soft light fabric in light.
   const sofa = isLight ? '#b9c2cf' : shade(accent, -0.4)
-  const sofaBack = isLight ? '#c4ccd8' : shade(accent, -0.35)
   // Coffee-table wood: deep walnut in dark, light oak in light.
   const wood = isLight ? '#c9a876' : '#6b4b2a'
-  // Sofa (drawn first, at back). Anchored to the lounge origin the scene
-  // layout computed, so the zone follows the desk grid.
-  const sx = lounge.x + 0.6
-  const sy = lounge.y + 3.2
-  drawIsoBox(c, ox, oy, sx, sy, 0, 3.2, 1.0, 0.5, scale, {
-    top: shade(sofa, 0.06),
-    left: shade(sofa, -0.14),
-    right: shade(sofa, -0.24),
-    stroke,
-  })
-  drawIsoBox(c, ox, oy, sx, sy + 0.8, 0.5, 3.2, 0.2, 1.0, scale, {
-    top: shade(sofaBack, 0.06),
-    left: shade(sofaBack, -0.14),
-    right: shade(sofaBack, -0.22),
-    stroke,
-  })
+  // Anchored to the lounge origin the scene layout computed, so the zone
+  // follows the desk grid.
+  // ---- Sofa ----
+  // Geometry and comments live in drawSofa(); the footprint comes from
+  // loungeLayout() so the tests can assert on the same numbers.
+  drawSofa(c, ox, oy, scale, P, loungeLayout(lounge))
+  // ---- Coffee table: long enough that three cups fit with a margin ----------
+  const { tx, ty, tw, td } = loungeLayout(lounge)
+  const legIn = 0.14
+  const legs = [
+    [legIn, legIn], [tw - legIn, legIn],
+    [legIn, td - legIn], [tw - legIn, td - legIn],
+  ]
+  legs.sort((a, b) => (a[0] + a[1]) - (b[0] + b[1]))
+  for (let i = 0; i < legs.length; i++) {
+    drawCylinder(c, ox, oy, tx + legs[i][0], ty + legs[i][1], 0, 0.34, 0.05, scale, wood)
+  }
+  const tableZ = 0.34
+  const topH = 0.09
+  drawIsoBoxSoft(c, ox, oy, tx, ty, tableZ, tw, td, topH, scale, wood, { top: 0.18 })
 
-  // Coffee table
-  const tx = lounge.x + 1.4
-  const ty = lounge.y + 1.0
-  drawIsoBox(c, ox, oy, tx, ty, 0, 1.4, 1.0, 0.35, scale, {
-    top: shade(wood, 0.15),
-    left: shade(wood, -0.15),
-    right: shade(wood, -0.3),
-    stroke,
-  })
-
-  // Teacups — 🍵 emoji on the table (with a gentle bob).
+  // Teacups — 🍵 emoji, evenly spaced across the top with a margin each side and
+  // centred in depth so they stand ON the table rather than over its edges.
   c.save()
   c.textAlign = 'center'
-  c.textBaseline = 'middle'
-  const cupPx = Math.max(9, Math.round(scale * 0.32))
+  c.textBaseline = 'alphabetic'
+  const cupPx = Math.max(9, Math.round(scale * 0.30))
   c.font = cupPx + 'px system-ui, "Apple Color Emoji", "Segoe UI Emoji", sans-serif'
   for (let i = 0; i < 3; i++) {
-    const cxw = tx + 0.0 + i * 0.45
-    const cyw = ty + 0.25
-    const bob = 0.03 * Math.sin(tSec * 2 + i)
-    const [px, py] = iso(cxw, cyw, 0.12 + bob, scale)
+    const cxw = tx + tw * (i + 1) / 4
+    const cyw = ty + td * 0.5
+    // Tableware is stationary; only the separate hand-held cup is animated.
+    const [px, py] = iso(cxw, cyw, tableZ + topH, scale)
     c.fillText('🍵', ox + px, oy + py)
   }
   c.textAlign = 'start'
   c.textBaseline = 'alphabetic'
   c.restore()
+}
+
+// Pure world-space layout of ONE workstation: desk fixtures, chair and the
+// sitter's shoulders/hands. Extracted so the drawing code and the tests share
+// the SAME numbers — "the hands must clear the torso" is geometry, not taste,
+// and eyeballing it got it wrong twice.
+function deskLayout(slot) {
+  // NOTE: the sitter deliberately sits at the desk's west end while the monitor
+  // and keyboard are centred a little further east. That offset is what makes the
+  // hands reach forward past the body. Centring everything on the sitter instead
+  // made the typing read worse — do NOT re-align these without comparing the
+  // render before and after.
+  const chairX = slot.x + 0.15
+  const chairY = slot.y + 0.72
+  const cx = chairX + 0.45
+  const cy = chairY + 0.45
+  const seatZ = 0.50           // hips on the cushion (its top sits at 0.48)
+  const torsoH = 0.62
+  const topZ = seatZ + torsoH
+  const torsoR = 0.29
+  // Seen from behind there is no need to show neck skin: the head sits IN the
+  // collar, and a skin cylinder that size read as a third blob next to the two
+  // hands. The neck stays, but it is narrow and almost entirely covered.
+  const neckR = 0.10
+  const neckTopZ = topZ + 0.10
+  const collarR = 0.19
+  const collarTopZ = topZ + 0.065
+  const headR = 0.29
+  const headCz = topZ + 0.05 + headR // the head's lowest point is topZ + 0.05
+  const kbX = slot.x + 0.65
+  const kbY = slot.y + 0.70
+  const kbW = 0.80
+  const kbD = 0.30
+  const handZ = 0.82
+  const handY = kbY + kbD * 0.5
+  return {
+    chairX, chairY, cx, cy, seatZ, torsoH, topZ, torsoR,
+    neckR, neckTopZ, collarR, collarTopZ, headR, headCz,
+    kbX, kbY, kbW, kbD, handZ, handY,
+    monX: slot.x + 0.62,
+    monY: slot.y + 0.14,
+    panW: 0.92, panD: 0.07, panH: 0.60, panZ: 0.86,
+    mugX: slot.x + 1.86,
+    mugY: slot.y + 0.52,
+    shoulderZ: topZ - 0.10,
+    // Every SHOULDER lands inside the torso's silhouette and every HAND well
+    // outside it. drawDeskAndAvatar paints both arms BEFORE the torso, so the
+    // body occludes the top of each arm while both hands stay visible on the
+    // keys — that ordering is the layering fix.
+    shoulders: [
+      [cx - 0.26, cy - 0.04, topZ - 0.10],
+      [cx + 0.26, cy - 0.04, topZ - 0.10],
+    ],
+    hands: [
+      [kbX + 0.20, handY, handZ],
+      [kbX + kbW - 0.20, handY, handZ],
+    ],
+  }
+}
+
+// Stable identity phase: reordering profiles does not synchronise their gestures.
+function posePhase(profile) {
+  let h = 0
+  for (const ch of String(profile || '')) h = (h * 31 + ch.charCodeAt(0)) >>> 0
+  return (h % 1009) / 1009
+}
+function deskPose(slot, profile, tSec) {
+  const S = deskLayout(slot)
+  const phase = posePhase(profile) * Math.PI * 2
+  const breath = 0.006 * Math.sin(tSec * 1.35 + phase)
+  const hands = S.hands.map((h, a) => [h[0] + 0.006 * Math.sin(tSec * 3 + phase + a),
+    h[1], 0.817 + 0.007 * (0.5 + 0.5 * Math.sin(tSec * 7 + phase + a * 2.3))])
+  const shoulders = S.shoulders.map(p => [p[0], p[1], p[2] + breath])
+  const elbows = shoulders.map((p, a) => [p[0] * 0.45 + hands[a][0] * 0.55,
+    p[1] * 0.48 + hands[a][1] * 0.52 + 0.035, 0.86 + breath * 0.5])
+  return {S, breath, hands, shoulders, elbows, head: [S.cx, S.cy, S.headCz + breath]}
+}
+// Two-bone geometry: the pole is a direction, projected perpendicular to the
+// shoulder/wrist axis. Fixed lengths and an outward pole keep the elbow on one
+// continuous branch (including the sip hold), rather than stretching a sleeve.
+function armElbow(shoulder, hand, upper, lower, pole) {
+  const delta = hand.map((v,i) => v-shoulder[i])
+  const distance = Math.hypot(...delta)
+  const axis = delta.map(v => v/distance)
+  const dot = pole.reduce((s,v,i) => s+v*axis[i],0)
+  const normal = pole.map((v,i) => v-dot*axis[i])
+  const norm = Math.hypot(...normal)
+  const along = (upper*upper-lower*lower+distance*distance)/(2*distance)
+  const height = Math.sqrt(Math.max(0,upper*upper-along*along))
+  return shoulder.map((v,i) => v+axis[i]*along+normal[i]/norm*height)
+}
+// Smooth rest -> lift -> sip hold -> lower -> rest; hips and feet never bob.
+function loungePose(slot, profile, tSec) {
+  const phase = ((tSec / 12 + posePhase(profile)) % 1 + 1) % 1
+  const smooth = v => { v = Math.max(0, Math.min(1, v)); return v * v * (3 - 2 * v) }
+  const lift = phase < 0.25 ? 0 : phase < 0.48 ? smooth((phase - 0.25) / 0.23)
+    : phase < 0.64 ? 1 : phase < 0.88 ? 1 - smooth((phase - 0.64) / 0.24) : 0
+  const stage = phase < 0.25 || phase >= 0.88 ? 'rest' : phase < 0.48 ? 'lift' : phase < 0.64 ? 'sip' : 'lower'
+  const breath = 0.004 * Math.sin(tSec * 1.1 + posePhase(profile) * 6.28)
+  const topZ = 1.06 + breath
+  const head = [slot.x, slot.y, topZ + 0.37]
+  const mix = (a,b) => a + (b-a)*lift
+  const cup = [slot.x + mix(0.37, 0.12), slot.y + mix(0.12, 0.10), mix(0.68, head[2] - 0.206)]
+  const hand = [cup[0] + 0.08, cup[1] - 0.015, cup[2] + 0.015]
+  const shoulders = [[slot.x-0.24,slot.y,topZ-0.09],[slot.x+0.24,slot.y,topZ-0.09]]
+  const lapHand = [slot.x-0.16,slot.y+0.17,0.39]
+  const elbows = [armElbow(shoulders[0],lapHand,0.33,0.30,[-1,0.35,0]),
+    armElbow(shoulders[1],hand,0.32,0.32,[1,0,0])]
+  return {phase, lift, stage, topZ, seatZ: 0.46, head, headR: 0.26, cup, hand,
+    shoulders, elbows, lapHand,
+    legs: [-1,1].map(a => ({hip:[slot.x+a*0.14,slot.y,0.49],
+      knee:[slot.x+a*0.20,slot.y+0.18,0.26],foot:[slot.x+a*0.23,slot.y+0.21,0.05]}))}
+}
+// Explicit shoulder/elbow/wrist segments, with a rounded joint at the elbow.
+function drawPoseArm(c, project, shoulder, elbow, hand, width, cloth, skin) {
+  const a=project(shoulder), b=project(elbow), d=project(hand)
+  drawLimb(c,a,b,width,cloth)
+  drawLimb(c,b,d,width*0.86,cloth)
+  drawPalm(c,d,width,skin)
 }
 
 function drawDeskAndAvatar(c, ox, oy, scale, slot, entry, index, tSec, palette) {
@@ -849,150 +1397,231 @@ function drawDeskAndAvatar(c, ox, oy, scale, slot, entry, index, tSec, palette) 
   const busy = !!entry.busy
   const alpha = online ? 1 : 0.45
   const pcolor = profileColor(entry.profile) || accent
+  const S = deskLayout(slot)
 
   c.save()
   c.globalAlpha = alpha
 
-  // Desk
-  drawIsoBox(c, ox, oy, slot.x, slot.y, 0, 2.2, 1.1, 0.75, scale, {
-    top: shade('#9c7a52', 0.15),
-    left: shade('#9c7a52', -0.15),
-    right: shade('#9c7a52', -0.3),
-    stroke,
-  })
+  // ---- Desk ----------------------------------------------------------------
+  // Grounding shadow, then a soft-shaded top so the wood catches the light
+  // along its back edge instead of reading as a wireframe box.
+  softShadow(c, ox, oy, slot.x + DESK_W / 2, slot.y + DESK_D / 2, 1.05, scale,
+    P.shadowInk, 0.20)
+  drawIsoBoxSoft(c, ox, oy, slot.x, slot.y, 0, DESK_W, DESK_D, 0.75, scale, P.deskWood)
 
-  // Monitor stand + screen at the back edge of the desk
-  const monX = slot.x + 0.7
-  const monY = slot.y + 0.15
-  drawIsoBox(c, ox, oy, monX + 0.3, monY + 0.15, 0.75, 0.2, 0.2, 0.08, scale, {
-    top: P.monitorStandTop, left: P.monitorStandLeft, right: P.monitorStandRight, stroke,
-  })
-  // Screen face: neutral cool-grey so it doesn't clash with the
-  // profile-colored person. Brightness alone signals on/off:
-  // online = lit cool-grey, offline = dark screen (or light-grey in light mode).
-  const screenGlow = online ? P.screenOnGlow : P.screenOffGlow
-  const screenBase = online ? P.screenOnBase : P.screenOff
-  drawIsoBox(c, ox, oy, monX, monY, 0.83, 0.85, 0.08, 0.6, scale, {
-    top: screenGlow,
-    left: screenBase,
-    right: shade(screenBase, -0.3),
-    stroke,
-  })
-
-  // Screen CONTENT when online: fake code/UI lines painted on the screen face
-  // so a running station looks alive. The face spans x∈[monX, monX+0.85] at
-  // y=monY+0.08 (front), z∈[0.83, 1.43]. Map (u,v)∈[0,1]² onto it via iso().
+  // ---- Monitor: plinth + neck + bezel panel, and the light it throws ------
+  const monX = S.monX
+  const monY = S.monY
+  const panW = S.panW
+  const panD = S.panD
+  const panH = S.panH
+  const panZ = S.panZ
+  const monCX = monX + panW * 0.5
+  const monCY = monY + panD * 0.5
+  drawIsoDiscSoft(c, ox, oy, monCX, monCY, 0.77, 0.15, scale, P.monitorShell, { top: 0.10 })
+  drawCylinder(c, ox, oy, monCX, monCY, 0.75, panZ + 0.02, 0.045, scale, P.monitorShell)
+  // The halo the panel throws is drawn BEFORE the panel, so it spills around it
+  // rather than washing over the screen. Additive, tinted by the running state.
   if (online) {
-    const faceY = monY + 0.08
-    const zBot = 0.83
-    const zTop = 1.43
-    // Point on the screen face in screen space.
-    const sp = (u, v) => {
-      const [px, py] = iso(monX + u * 0.85, faceY, zBot + v * (zTop - zBot), scale)
-      return [ox + px, oy + py]
-    }
+    const glowInk = busy ? P.screenGreenBusy : P.screenGreenIdle
+    const rgb = hexToRgb(glowInk) || { r: 140, g: 230, b: 170 }
+    const [gx, gy] = screenPt(ox, oy, monCX, monCY, panZ + panH * 0.5, scale)
+    const gr = Math.max(6, panW * 0.5 * scale * 2.0)
+    const gg = c.createRadialGradient(gx, gy, gr * 0.10, gx, gy, gr)
+    gg.addColorStop(0, 'rgba(' + rgb.r + ',' + rgb.g + ',' + rgb.b + ', 0.16)')
+    gg.addColorStop(0.5, 'rgba(' + rgb.r + ',' + rgb.g + ',' + rgb.b + ', 0.06)')
+    gg.addColorStop(1, 'rgba(' + rgb.r + ',' + rgb.g + ',' + rgb.b + ', 0)')
     c.save()
-    // Screen content is terminal-green regardless of profile hue.
+    c.globalCompositeOperation = 'lighter'
+    fillEllipse(c, gx, gy, gr, gr, gg)
+    c.restore()
+  }
+  drawIsoBoxSoft(c, ox, oy, monX, monY, panZ, panW, panD, panH, scale,
+    P.monitorShell, { top: 0.16 })
+
+  // The screen itself: the panel's FRONT face (+y side), inset for the bezel.
+  // (u, v) ∈ [0,1]² maps onto that inset parallelogram, so the fake code lines
+  // land on the glass rather than over the frame.
+  const bezU0 = 0.055
+  const bezU1 = 0.945
+  const bezV0 = 0.07
+  const bezV1 = 0.93
+  const sp = (u, v) => screenPt(
+    ox, oy,
+    monX + (bezU0 + u * (bezU1 - bezU0)) * panW,
+    monY + panD,
+    panZ + (bezV0 + v * (bezV1 - bezV0)) * panH,
+    scale,
+  )
+  {
+    const p00 = sp(0, 0)
+    const p10 = sp(1, 0)
+    const p11 = sp(1, 1)
+    const p01 = sp(0, 1)
+    // Cool-grey glass either way: brightness alone signals on/off, so the
+    // screen never clashes with the profile-colored person in front of it.
+    const sg = c.createLinearGradient(p01[0], p01[1], p11[0], p11[1])
+    sg.addColorStop(0, online ? P.screenOnGlow : P.screenOffGlow)
+    sg.addColorStop(1, online ? P.screenOnBase : P.screenOff)
+    c.beginPath()
+    c.moveTo(p00[0], p00[1])
+    c.lineTo(p10[0], p10[1])
+    c.lineTo(p11[0], p11[1])
+    c.lineTo(p01[0], p01[1])
+    c.closePath()
+    c.fillStyle = sg
+    c.fill()
+  }
+
+  // Screen CONTENT when online: fake code/UI lines so a running station looks
+  // alive. Terminal-green regardless of the profile hue.
+  if (online) {
+    c.save()
     const screenText = busy ? P.screenGreenBusy : P.screenGreenIdle
     // Title bar across the top.
     c.strokeStyle = screenText
     c.lineWidth = 2
-    let [x0, y0] = sp(0.12, 0.85)
-    let [x1, y1] = sp(0.6, 0.85)
-    c.beginPath(); c.moveTo(x0, y0); c.lineTo(x1, y1); c.stroke()
+    const [tx0, ty0] = sp(0.10, 0.86)
+    const [tx1, ty1] = sp(0.58, 0.86)
+    c.beginPath(); c.moveTo(tx0, ty0); c.lineTo(tx1, ty1); c.stroke()
     // Code lines: a few left-aligned rows of varying width, brighter when busy.
     c.lineWidth = busy ? 1.6 : 1.2
     const rows = [
-      [0.12, 0.68, 0.62],
-      [0.20, 0.56, 0.70],
-      [0.20, 0.44, 0.48],
-      [0.12, 0.32, 0.66],
-      [0.28, 0.20, 0.40],
+      [0.10, 0.68, 0.58],
+      [0.18, 0.56, 0.66],
+      [0.18, 0.44, 0.44],
+      [0.10, 0.32, 0.62],
+      [0.26, 0.20, 0.36],
     ]
     for (let i = 0; i < rows.length; i++) {
       const [uStart, v, uLen] = rows[i]
       c.strokeStyle = screenText
-      const [ax, ay] = sp(uStart, v)
-      const [bx, by] = sp(uStart + uLen, v)
-      c.beginPath(); c.moveTo(ax, ay); c.lineTo(bx, by); c.stroke()
+      const [ax2, ay2] = sp(uStart, v)
+      const [bx2, by2] = sp(uStart + uLen, v)
+      c.beginPath(); c.moveTo(ax2, ay2); c.lineTo(bx2, by2); c.stroke()
     }
     // Busy: a blinking cursor block at the end of an active line.
     if (busy) {
       const blink = (Math.sin(tSec * 4 + index) + 1) / 2
       c.globalAlpha = 0.35 + 0.55 * blink
       c.fillStyle = screenText
-      const [cxp, cyp] = sp(0.62, 0.68)
-      const [cxp2] = sp(0.66, 0.68)
+      const [cxp, cyp] = sp(0.60, 0.68)
+      const [cxp2] = sp(0.64, 0.68)
       const cw = Math.abs(cxp2 - cxp) || 3
       c.fillRect(cxp, cyp - 3, cw, 6)
     }
     c.restore()
   }
 
-  // Chair — behind the desk (+y). Neutral dark-grey so the profile-colored
-  // person sitting in it stays visually distinct from the seat.
-  const chairX = slot.x + 0.6
-  const chairY = slot.y + 1.3
-  drawIsoBox(c, ox, oy, chairX, chairY, 0, 0.9, 0.9, 0.5, scale, {
-    top: P.chairTop,
-    left: P.chairLeft,
-    right: P.chairRight,
-    stroke,
-  })
-  // Chair BACK is drawn later (after the person) so it correctly occludes
-  // the sitter's lower back — in iso painter's order the backrest sits at the
-  // highest +y and must paint last.
+  // ---- Keyboard + mouse: what the hands are actually on -------------------
+  // Without these the hands hovered over a bare desktop and the arms had to
+  // reach to the monitor to land anywhere. The keyboard sits at the FRONT of
+  // the desk, close to the sitter, so the arms fall forward-and-down.
+  const kbX = S.kbX
+  const kbY = S.kbY
+  const kbW = S.kbW
+  const kbD = S.kbD
+  drawIsoBoxSoft(c, ox, oy, kbX, kbY, 0.75, kbW, kbD, 0.045, scale,
+    P.keyboard, { top: 0.06, edgeAlpha: 0.10 })
+  drawIsoDiscSoft(c, ox, oy, kbX + kbW + 0.13, kbY + kbD * 0.5, 0.795, 0.065,
+    scale, P.keyboard, { top: 0.16 })
+
+  // A mug on the free right-hand end of the desk, so the surface is not bare.
+  const mugX = S.mugX
+  const mugY = S.mugY
+  drawCylinder(c, ox, oy, mugX, mugY, 0.75, 0.90, 0.10, scale, P.chairBackTop)
+  drawIsoDiscSoft(c, ox, oy, mugX, mugY, 0.905, 0.075, scale, P.hair, { top: 0.10 })
+
+  // ---- Chair: plinth + gas post + cushion (the backrest paints later) -----
+  // The sitter sits at the LEFT end of the desk, not on the centre line: in this
+  // projection "forward" (-y) also moves a point up-and-right on screen, so a
+  // centred sitter leaves their hands inside their own torso silhouette (they
+  // read as sitting on their lap). Clearance is a property of (x - y): a hand
+  // shows outside the torso only when its (x - y) exceeds the torso's by ~0.41.
+  const chairX = S.chairX
+  const chairY = S.chairY
+  const chairCX = S.cx
+  const chairCY = S.cy
+  drawIsoDiscSoft(c, ox, oy, chairCX, chairCY, 0.02, 0.30, scale, P.chairBase, { top: 0.08 })
+  drawCylinder(c, ox, oy, chairCX, chairCY, 0.02, 0.34, 0.055, scale, P.chairPost)
+  drawCylinder(c, ox, oy, chairCX, chairCY, 0.34, 0.48, 0.33, scale, P.chairTop)
+  // Chair BACK is drawn later (after the sitter) so it correctly occludes their
+  // lower back — in iso painter's order the backrest sits at the highest +y and
+  // must paint last.
   const drawChairBack = () => {
-    drawIsoBox(c, ox, oy, chairX, chairY + 0.7, 0.5, 0.9, 0.2, 0.9, scale, {
-      top: P.chairBackTop,
-      left: P.chairBackLeft,
-      right: P.chairBackRight,
-      stroke,
-    })
+    drawIsoBoxSoft(c, ox, oy, chairX + 0.02, chairY + 0.72, 0.46, 0.86, 0.16, 0.62,
+      scale, P.chairBackTop, { top: 0.14 })
   }
 
   // At-desk avatar only when busy
   if (busy) {
-    const typing = 0.05 * Math.sin(tSec * 6 + index)
-    const bodyH = 0.9
-    const bodyX = chairX + 0.15
-    const bodyY = chairY + 0.15
-    const bodyZ = 0.55 + typing
-    drawIsoBox(c, ox, oy, bodyX, bodyY, bodyZ, 0.6, 0.6, bodyH, scale, {
-      top: shade(pcolor, 0.1),
-      left: shade(pcolor, -0.15),
-      right: shade(pcolor, -0.3),
-      stroke,
-    })
-    const headCX = bodyX + 0.3
-    const headCY = bodyY + 0.3
-    const headCZ = bodyZ + bodyH + 0.25
-    const headR = 0.28
-    drawSphere(c, ox, oy,
-      headCX, headCY, headCZ,
-      headR, scale, shade(pcolor, 0.35), stroke)
+    const pose = deskPose(slot, entry.profile, tSec)
+    const typing = pose.breath
+    const cxw = S.cx // sitter centre (world)
+    const cyw = S.cy
+    const seatZ = S.seatZ + typing
+    const topZ = S.topZ + typing
 
-    // Backrest paints after the body/head so it occludes the sitter's back.
+    // The sitter is a shaded FIGURE: a grounding shadow, a gradient-cylinder
+    // torso (the CLOTHES carry the profile color = identity, while skin/hair stay
+    // neutral), a NARROW neck so the head is not a ball glued to the shoulders,
+    // two arms reaching down-forward onto the keyboard, and a sphere head.
+    // The arms are painted BEFORE the torso, and that ordering is the whole fix:
+    // each shoulder sits INSIDE the torso's silhouette while each hand is well
+    // OUTSIDE it, so the body occludes the top of every arm and both hands stay
+    // visible on the keys. Painting the arms LAST instead lays the near hand ON
+    // TOP of the body (the layering bug) — only the draw order matters here.
+    const armW = Math.max(1.5, 0.15 * scale)
+    const armBase = shade(pcolor, -0.20)
+    const project = p => screenPt(ox,oy,...p,scale)
+    softShadow(c, ox, oy, cxw, cyw, 0.72, scale, P.shadowInk, 0.30)
+    // Both arms remain behind the torso, preserving the approved handedness.
+    for (let a=0;a<2;a++) drawPoseArm(c,project,pose.shoulders[a],pose.elbows[a],
+      pose.hands[a],armW,armBase,P.skin)
+
+    drawFigureTorso(c,ox,oy,cxw,cyw,seatZ,topZ,S.torsoR,scale,pcolor,P.trouser)
+    // Only a small outer sleeve cap crosses the torso silhouette. Keep the
+    // distant forearm/hand behind the body and the cap well away from the neck;
+    // the anatomical shoulder and all workstation coordinates stay untouched.
+    c.save()
+    const torsoCentre = project([cxw,cyw,topZ])
+    c.beginPath()
+    c.rect(torsoCentre[0]-scale,torsoCentre[1]-0.065*scale,0.88*scale,0.25*scale)
+    c.clip()
+    const capEnd = pose.shoulders[0].map((v,i) => v+(pose.elbows[0][i]-v)*0.38)
+    drawLimb(c,project(pose.shoulders[0]),project(capEnd),armW,armBase)
+    c.restore()
+    // Collar + neck. The collar (clothes, wider) frames the neck, and the head
+    // sits low enough that the neck is nearly all covered — a bare skin
+    // cylinder on the shoulders read as a bald patch.
+    drawFigureBand(c, ox, oy, cxw, cyw, topZ - 0.07, S.collarTopZ + typing, S.collarR,
+      scale, shade(pcolor, -0.14))
+    drawFigureBand(c, ox, oy, cxw, cyw, topZ - 0.08, S.neckTopZ + typing, S.neckR,
+      scale, P.skin)
+
+    // Head: shaded sphere + hair; the blink is a rare, quick squash. Facing is
+    // the DESK direction (-y in world = up-right on screen), so we see the back
+    // of the head — the sitter is looking at the monitor, not out at us.
+    const headR = S.headR * scale
+    const [hx, hy] = screenPt(ox, oy, cxw, cyw, S.headCz + typing, scale)
+    const blink = Math.sin(tSec * 1.4 + index * 2.1) > 0.965 ? 0.14 : 1
+    drawHead(c, hx, hy, headR, {
+      skin: P.skin,
+      skinShadow: P.skinShadow,
+      hair: P.hair,
+      hairLit: P.hairLit,
+      facing: DESK_FACING,
+      blink,
+    })
+
+    // Backrest paints after the sitter so it occludes their back.
     drawChairBack()
 
-    // Hands over the desk, alternating vertical offset — "typing".
-    const beat = Math.sin(tSec * 10 + index)
-    const t1 = beat > 0 ? 0.05 : 0.0
-    const t2 = beat > 0 ? 0.0 : 0.05
-    const handZ = 0.83
-    drawSphere(c, ox, oy,
-      monX + 0.2, monY + 0.75, handZ + t1,
-      0.09, scale, shade(pcolor, 0.4), stroke)
-    drawSphere(c, ox, oy,
-      monX + 0.6, monY + 0.75, handZ + t2,
-      0.09, scale, shade(pcolor, 0.4), stroke)
-
-    // Floating name label just above the head disc (busy avatars are always online).
-    const [nhx, nhy] = iso(headCX, headCY, headCZ + headR, scale)
+    // Floating name label just above the head.
     const nameFontPx = 10
     c.font = nameFontPx + 'px system-ui, -apple-system, "Segoe UI", sans-serif'
     c.textAlign = 'center'
-    drawNameBadge(c, entry.profile, ox + nhx, oy + nhy - 6, {
+    drawNameBadge(c, entry.profile, hx, hy - headR - 6, {
       fontPx: nameFontPx,
       textColor: nameInk(pcolor, P),
       borderColor: P.pillBorder,
@@ -1035,43 +1664,56 @@ function drawLoungeAvatar(c, ox, oy, scale, slot, entry, index, tSec, idx, palet
   const online = !!entry.online
   const alpha = online ? 1 : 0.35
   const pcolor = profileColor(entry.profile) || accent
-  const bob = online ? 0.05 * Math.sin(tSec * 2 + idx) : 0
+  const pose = loungePose(slot, entry.profile, online ? tSec : 0)
+  const project = p => screenPt(ox,oy,...p,scale)
 
   c.save()
   c.globalAlpha = alpha
 
-  // Small stool disc under the avatar (neutral, not profile-colored).
-  drawIsoDisc(c, ox, oy, slot.x, slot.y, 0.02, 0.36, scale, P.stool, stroke)
+  // Stool: a neutral column with a seat cushion on top, so the sitter has
+  // something to sit on and legs that reach the floor.
+  softShadow(c, ox, oy, slot.x, slot.y - 0.14, 0.62, scale, P.shadowInk, 0.26)
+  drawCylinder(c, ox, oy, slot.x, slot.y, 0, 0.38, 0.28, scale, P.chairPost)
+  drawCylinder(c, ox, oy, slot.x, slot.y, 0.38, 0.45, 0.33, scale, P.stool)
+  drawIsoDiscSoft(c, ox, oy, slot.x, slot.y, 0.455, 0.33, scale, P.chairTop, { top: 0.16 })
 
-  const bodyZ = 0.05 + bob
-  drawIsoBox(c, ox, oy, slot.x - 0.25, slot.y - 0.25, bodyZ, 0.5, 0.5, 0.7, scale, {
-    top: shade(pcolor, 0.1),
-    left: shade(pcolor, -0.15),
-    right: shade(pcolor, -0.3),
-    stroke,
+  const seatZ = pose.seatZ
+  const legW = Math.max(1.5, 0.17 * scale)
+  for (const leg of pose.legs) {
+    const hip=project(leg.hip), knee=project(leg.knee), foot=project(leg.foot)
+    drawLimb(c,hip,knee,legW,P.trouser)
+    drawLimb(c,knee,foot,legW*0.86,P.trouser)
+    figurePoly(c,[[foot[0]-legW*.45,foot[1]-legW*.22],[foot[0]+legW*.65,foot[1]-legW*.15],[foot[0]+legW,foot[1]+legW*.40],[foot[0]-legW*.35,foot[1]+legW*.45]],P.shoe)
+  }
+  const topZ = pose.topZ
+  const armW = Math.max(1.4, 0.145 * scale)
+  const handBase = shade(pcolor,-0.16)
+  // Far sleeve disappears behind the body; its hand rests visibly on the knee.
+  drawPoseArm(c,project,pose.shoulders[0],pose.elbows[0],pose.lapHand,armW,handBase,P.skin)
+  drawFigureTorso(c,ox,oy,slot.x,slot.y,seatZ,topZ,.26,scale,pcolor,P.trouser)
+  drawFigureBand(c,ox,oy,slot.x,slot.y,topZ-0.03,topZ+0.11,0.105,scale,P.skin)
+  const headR = pose.headR
+  const headCZ = pose.head[2]
+  const [hx,hy] = project(pose.head)
+  const blink = Math.sin(tSec * 1.4 + idx * 2.1) > 0.965 ? 0.14 : 1
+  drawHead(c, hx, hy, headR * scale, {
+    skin: P.skin,
+    skinShadow: P.skinShadow,
+    hair: P.hair,
+    hairLit: P.hairLit,
+    facing: LOUNGE_FACING,
+    blink,
   })
-  const headCZ = bodyZ + 0.7 + 0.22
-  const headR = 0.24
-  drawSphere(c, ox, oy,
-    slot.x, slot.y, headCZ,
-    headR, scale, shade(pcolor, 0.35), stroke)
 
-  // Raised tea cup only if online (idle-online); offline avatars sit slouched.
+  // Near arm and cup share one pose. Cup rim stops at the LOWER lip, not
+  // through the face; cup body and grasp paint in front of the raised forearm.
+  drawPoseArm(c,project,pose.shoulders[1],pose.elbows[1],pose.hand,armW,handBase,P.skin)
   if (online) {
-    const cupZ = bodyZ + 0.6 + 0.03 * Math.sin(tSec * 3 + idx)
-    drawIsoDisc(c, ox, oy,
-      slot.x + 0.2, slot.y - 0.1, cupZ,
-      0.09, scale, '#f2ede4', stroke)
-    c.save()
-    c.globalAlpha = alpha * (0.35 + 0.25 * Math.sin(tSec * 2 + idx))
-    c.strokeStyle = '#e6d9c2'
-    c.lineWidth = 1
-    const [sPx, sPy] = iso(slot.x + 0.2, slot.y - 0.1, cupZ + 0.05, scale)
-    c.beginPath()
-    c.moveTo(ox + sPx, oy + sPy)
-    c.quadraticCurveTo(ox + sPx + 3, oy + sPy - 6, ox + sPx - 2, oy + sPy - 12)
-    c.stroke()
-    c.restore()
+    const [cupX,cupY,cupZ] = pose.cup
+    drawCylinder(c,ox,oy,cupX,cupY,cupZ-0.055,cupZ+0.08,0.085,scale,'#f2ede4')
+    drawIsoDiscSoft(c,ox,oy,cupX,cupY,cupZ+0.082,0.067,scale,'#76543b')
+    const hp=project(pose.hand)
+    drawPalm(c,hp,armW*.85,P.skin,true)
   }
 
   // Floating name label just above the head disc.
@@ -1129,6 +1771,18 @@ function OfficeCanvas({ entries, selectedIndex, onPick }) {
   const frameRef = useRef(null)
   const selectedRef = useRef(selectedIndex)
   const onPickRef = useRef(onPick)
+  // Zoom/pan view. The rAF loop reads the ref (it must see the newest value
+  // without re-subscribing); the state copy drives the overlay readout.
+  const [view, updateView] = useState({ zoom: 1, panX: 0, panY: 0 })
+  const viewRef = useRef(view)
+  const setView = (next) => {
+    // Native wheel events can arrive before React commits the next render.
+    viewRef.current = next
+    updateView(next)
+  }
+  const dragRef = useRef(null)
+  const suppressClickRef = useRef(false)
+  const [dragging, setDragging] = useState(false)
 
   useEffect(() => {
     entriesRef.current = entries
@@ -1173,6 +1827,7 @@ function OfficeCanvas({ entries, selectedIndex, onPick }) {
         try {
           frameRef.current = drawFrame(
             canvas, c2, entriesRef.current || [], tSec, selectedRef.current,
+            viewRef.current,
           )
         } catch (err) {
           // Never let a draw error kill the loop.
@@ -1199,10 +1854,105 @@ function OfficeCanvas({ entries, selectedIndex, onPick }) {
     }
   }, [])
 
+  // Canvas box + scene layout, from the LIVE DOM (not props), so a zoom always
+  // uses the same numbers drawFrame just used.
+  const viewport = () => {
+    const rect = containerRef.current
+      ? containerRef.current.getBoundingClientRect()
+      : null
+    const count = (entriesRef.current || []).length
+    return {
+      cssW: Math.max(200, rect ? Math.floor(rect.width) : 640),
+      cssH: Math.max(200, rect ? Math.floor(rect.height) : 400),
+      L: sceneLayout(count),
+    }
+  }
+
+  // Zoom keeping the point under (ax, ay) — the cursor for wheel, the canvas
+  // centre for the buttons — pinned to its screen position.
+  const applyZoom = (nextZoom, ax, ay) => {
+    const vp = viewport()
+    setView(zoomAbout(vp.cssW, vp.cssH, vp.L, viewRef.current, nextZoom, ax, ay))
+  }
+  const resetView = () => setView({ zoom: 1, panX: 0, panY: 0 })
+
+  useEffect(() => {
+    const canvas = canvasRef.current
+    if (!canvas) return
+    const handleWheel = (event) => {
+      // React delegates wheel passively; use a native non-passive listener so
+      // modifier-wheel/pinch can cancel browser zoom. Plain wheel still scrolls.
+      if (!event.ctrlKey && !event.metaKey) return
+      event.preventDefault()
+      const rect = canvas.getBoundingClientRect()
+      const delta = event.deltaMode === 1 ? event.deltaY * 16 : event.deltaY
+      const factor = Math.pow(1.0018, -delta)
+      applyZoom(
+        viewRef.current.zoom * factor,
+        event.clientX - rect.left,
+        event.clientY - rect.top,
+      )
+    }
+    canvas.addEventListener('wheel', handleWheel, { passive: false })
+    return () => canvas.removeEventListener('wheel', handleWheel)
+    // Captured helpers read live DOM/entriesRef/viewRef, not render-time state.
+  }, [])
+
+  // Drag to pan. A press that never moves is still a click, so the desk pick
+  // keeps working; once the pointer travels past a few px it becomes a pan and
+  // the click that follows the release is swallowed.
+  const handlePointerDown = (event) => {
+    if (event.button !== 0) return
+    dragRef.current = {
+      id: event.pointerId,
+      x: event.clientX,
+      y: event.clientY,
+      panX: viewRef.current.panX,
+      panY: viewRef.current.panY,
+      moved: false,
+    }
+  }
+
+  const handlePointerMove = (event) => {
+    const d = dragRef.current
+    if (!d || d.id !== event.pointerId) return
+    const dx = event.clientX - d.x
+    const dy = event.clientY - d.y
+    if (!d.moved) {
+      if (Math.abs(dx) < 3 && Math.abs(dy) < 3) return
+      d.moved = true
+      setDragging(true)
+      try {
+        event.currentTarget.setPointerCapture(event.pointerId)
+      } catch (err) {
+        // Capture is a nicety; the drag works without it.
+      }
+    }
+    setView({ zoom: viewRef.current.zoom, panX: d.panX + dx, panY: d.panY + dy })
+  }
+
+  const endDrag = (event) => {
+    const d = dragRef.current
+    if (!d) return
+    dragRef.current = null
+    if (!d.moved) return
+    suppressClickRef.current = true
+    setDragging(false)
+    try {
+      event.currentTarget.releasePointerCapture(d.id)
+    } catch (err) {
+      // Already released.
+    }
+  }
+
   // Click a desk -> report the profile (or null for a miss). The canvas draws in
   // logical CSS px (drawFrame scales the context by dpr itself), so clientX/Y
   // minus the element rect is already in the frame's coordinate space.
   const handleClick = (event) => {
+    if (suppressClickRef.current) {
+      suppressClickRef.current = false
+      return
+    }
     const pick = onPickRef.current
     if (!pick) return
     const frame = frameRef.current
@@ -1215,47 +1965,69 @@ function OfficeCanvas({ entries, selectedIndex, onPick }) {
     pick(index >= 0 ? list[index] : null)
   }
 
-  return jsx('div', {
-    ref: containerRef,
-    className: cn('relative w-full h-full min-h-[380px]'),
-    children: jsx('canvas', {
-      ref: canvasRef,
-      onClick: handleClick,
-      title: 'Click a desk to inspect that profile',
-      className: cn(
-        'block w-full h-full rounded-md border border-[var(--ui-stroke-secondary)]',
-        onPick ? 'cursor-pointer' : '',
-      ),
-    }),
-  })
-}
+  const zoomPct = Math.round(view.zoom * 100)
+  const atFit = view.zoom === 1 && view.panX === 0 && view.panY === 0
+  const btn =
+    'px-1.5 py-1 leading-none rounded text-[var(--ui-text-secondary)] ' +
+    'hover:bg-[rgba(127,127,127,0.18)] active:bg-[rgba(127,127,127,0.28)]'
 
-function OfficeLegend({ entries }) {
-  const items = useMemo(() => entries || [], [entries])
-  const children = items.map((e) => {
-    const c = profileColor(e.profile) || '#888'
-    const label = e.busy ? 'busy' : e.online ? 'idle' : 'offline'
-    return jsxs('div', {
-      className: 'flex items-center gap-1.5 px-2 py-1 rounded-md border border-[var(--ui-stroke-secondary)] bg-[var(--ui-bg)]',
-      children: [
-        jsx('span', {
-          className: 'inline-block h-2 w-2 rounded-full',
-          style: { backgroundColor: c },
-        }),
-        jsx('span', {
-          className: 'text-[var(--ui-text-secondary)]',
-          children: e.profile,
-        }),
-        jsx('span', {
-          className: 'text-[var(--ui-text-tertiary)]',
-          children: '· ' + label + (e.busy ? ' (' + (e.active_agents | 0) + ')' : ''),
-        }),
-      ],
-    }, e.profile)
-  })
-  return jsx('div', {
-    className: 'flex flex-wrap gap-2 text-xs',
-    children,
+  return jsxs('div', {
+    ref: containerRef,
+    className: cn('relative w-full h-full min-h-[380px] select-none'),
+    children: [
+      jsx('canvas', {
+        ref: canvasRef,
+        onClick: handleClick,
+        onPointerDown: handlePointerDown,
+        onPointerMove: handlePointerMove,
+        onPointerUp: endDrag,
+        onPointerCancel: endDrag,
+        onDoubleClick: resetView,
+        style: { touchAction: 'none' },
+        title: 'Click a desk to inspect · ⌘/Ctrl + scroll to zoom · drag to pan · double-click to fit',
+        className: cn(
+          'block w-full h-full rounded-md border border-[var(--ui-stroke-secondary)]',
+          onPick ? (dragging ? 'cursor-grabbing' : 'cursor-grab') : '',
+        ),
+      }),
+      jsxs('div', {
+        className:
+          'absolute right-2 top-2 flex items-center gap-0.5 rounded-md ' +
+          'border border-[var(--ui-stroke-secondary)] bg-[var(--ui-bg)] px-0.5 py-0.5 ' +
+          'text-xs shadow-sm',
+        children: [
+          jsx('button', {
+            type: 'button',
+            className: btn,
+            title: 'Zoom out',
+            onClick: () => applyZoom(view.zoom / 1.3),
+            children: '\u2212',
+          }),
+          jsx('button', {
+            type: 'button',
+            className: cn(btn, 'min-w-[3.4rem] text-center font-medium tabular-nums'),
+            title: 'Back to fit (100%)',
+            onClick: resetView,
+            children: zoomPct + '%',
+          }),
+          jsx('button', {
+            type: 'button',
+            className: btn,
+            title: 'Zoom in',
+            onClick: () => applyZoom(view.zoom * 1.3),
+            children: '+',
+          }),
+        ],
+      }),
+      atFit
+        ? jsx('span', {
+            className:
+              'absolute left-2 bottom-2 pointer-events-none text-[10px] ' +
+              'text-[var(--ui-text-tertiary)]',
+            children: '\u2318/Ctrl + scroll to zoom \u00b7 drag to pan',
+          })
+        : null,
+    ],
   })
 }
 
@@ -1409,38 +2181,49 @@ function OfficeStatusChip({ ctx, prefs }) {
   })
 }
 
-function OfficeStats({ entries }) {
-  const stats = useMemo(() => summarize(entries), [entries])
+// Page overview always uses the full response, never the filtered scene/list.
+function profileOverview(entries) {
+  const list = Array.isArray(entries) ? entries : []
+  let working = 0, idle = 0, offline = 0
+  for (const e of list) {
+    if (!e.online) offline++
+    else if (e.busy) working++
+    else idle++
+  }
+  return { total: list.length, working, idle, offline }
+}
 
-  const chip = (value, label, valColor, key) => jsxs('div', {
-    className: 'flex items-baseline gap-1.5 px-2.5 py-1 rounded-md border border-[var(--ui-stroke-secondary)] bg-[var(--ui-bg)]',
+function officeView(entries, hideOffline, selectedProfile) {
+  const all = Array.isArray(entries) ? entries : []
+  const visible = hideOffline ? all.filter((e) => e.online) : all
+  // Keep details selected even if this profile is hidden from the scene/list.
+  const selected = all.find((e) => e.profile === selectedProfile) || null
+  return { all, visible, selected, selectedIndex: selected ? visible.indexOf(selected) : -1 }
+}
+
+function OfficeOverview({ entries }) {
+  const stats = profileOverview(entries)
+  return jsxs('section', {
+    'aria-label': 'Global profile overview',
+    'data-office-overview': true,
+    className: 'flex flex-col gap-2',
     children: [
-      jsx('span', {
-        className: 'text-sm font-semibold tabular-nums',
-        style: valColor ? { color: valColor } : undefined,
-        children: value,
+      jsx('div', {
+        className: 'grid grid-cols-2 sm:grid-cols-4 gap-2',
+        children: [['total', 'Total'], ['working', 'Working'], ['idle', 'Idle'], ['offline', 'Offline']].map(([key, label]) =>
+          jsxs('div', {
+            className: 'flex items-baseline gap-2 px-3 py-2 rounded-md border border-[var(--ui-stroke-secondary)]',
+            children: [
+              jsx('span', { className: 'text-lg font-semibold tabular-nums text-[var(--ui-text-secondary)]', 'data-count': key, children: stats[key] }),
+              jsx('span', { className: 'text-xs text-[var(--ui-text-tertiary)]', children: label }),
+            ],
+          }, key)),
       }),
-      jsx('span', {
+      jsx('p', {
         className: 'text-xs text-[var(--ui-text-tertiary)]',
-        children: label,
+        children: 'All profiles · Working = online with recent session activity · Idle = online, not working · Offline = not online.',
       }),
     ],
-  }, key)
-
-  const chips = [
-    chip(String(stats.online), 'online', 'var(--ui-accent)', 'online'),
-    chip(String(stats.busy), 'busy', stats.busy > 0 ? '#39ff88' : undefined, 'busy'),
-    chip(String(stats.sessions), 'active sessions', undefined, 'sessions'),
-    chip(formatCompact(stats.tokens), 'tokens', undefined, 'tokens'),
-    chip(String(stats.agents), 'agents', undefined, 'agents'),
-  ]
-  if (stats.cost > 0) {
-    chips.push(chip('$' + stats.cost.toFixed(2), 'cost', '#ffd479', 'cost'))
-  }
-
-  return jsx('div', {
-    className: 'flex flex-wrap gap-2',
-    children: chips,
   })
 }
 
@@ -1543,14 +2326,14 @@ function OfficeDetailPanel({ entry, onClose }) {
     className: 'flex flex-col gap-2.5 p-3 rounded-md border border-[var(--ui-stroke-secondary)] bg-[var(--ui-bg)]',
     children: [
       jsxs('div', {
-        className: 'flex items-center gap-2',
+        className: 'flex flex-wrap items-center gap-2 min-w-0',
         children: [
           jsx('span', {
             className: 'inline-block h-2.5 w-2.5 rounded-full shrink-0',
             style: { backgroundColor: pcolor },
           }),
           jsx('span', {
-            className: 'text-sm font-semibold text-[var(--ui-text-secondary)] truncate',
+            className: 'min-w-0 max-w-full text-sm font-semibold text-[var(--ui-text-secondary)] truncate',
             children: entry.profile,
           }),
           jsx('span', {
@@ -1568,12 +2351,12 @@ function OfficeDetailPanel({ entry, onClose }) {
           }),
         ],
       }),
-      jsx(OfficeMetric, { label: 'active sessions', value: String(entry.active_sessions | 0) }),
-      jsx(OfficeMetric, { label: 'open sessions', value: String(entry.open_sessions | 0) }),
-      jsx(OfficeMetric, { label: 'agents', value: String(entry.active_agents | 0) }),
-      jsx(OfficeMetric, { label: 'tokens', value: formatCompact(Number(entry.tokens_total) || 0) }),
+      jsx(OfficeMetric, { label: 'Sessions active in last 90s', value: String(entry.active_sessions | 0) }),
+      jsx(OfficeMetric, { label: 'Unended recorded sessions', value: String(entry.open_sessions | 0) }),
+      jsx(OfficeMetric, { label: 'Gateway-reported agents', value: String(entry.active_agents | 0) }),
+      jsx(OfficeMetric, { label: 'Recorded-session tokens', value: formatCompact(Number(entry.tokens_total) || 0) }),
       jsx(OfficeMetric, {
-        label: 'cost',
+        label: 'Recorded-session cost',
         value: '$' + (Number(entry.cost_total) || 0).toFixed(2),
         tone: Number(entry.cost_total) > 0 ? '#ffd479' : undefined,
       }),
@@ -1589,7 +2372,7 @@ function OfficeDetailPanel({ entry, onClose }) {
       jsx('div', {
         className: 'text-[10px] leading-snug text-[var(--ui-text-tertiary)]',
         children:
-          'Totals are aggregate columns only (COUNT/SUM/MAX) from this profile’s state.db, read read-only.',
+          'Usage sums all recorded sessions in this profile’s state.db, not today or this visit. Tokens = input + output; cost = actual USD, falling back to estimated. Missing or unreadable data returns zero. Recent activity does not necessarily mean a running task; unended sessions may be stale. Agents are gateway-reported, not live desktop chats.',
       }),
     ],
   })
@@ -1607,8 +2390,9 @@ function OfficeLeaderboard({ entries, selectedProfile, onSelect }) {
     jsxs('button', {
       type: 'button',
       onClick: () => onSelect(entry),
+      'data-profile-row': entry.profile,
       className: cn(
-        'flex w-full items-center gap-2 px-2 py-1 rounded-md text-left',
+        'flex w-full min-w-0 items-center gap-2 px-2 py-2 rounded-md text-left',
         entry.profile === selectedProfile
           ? 'bg-[var(--ui-accent)]/15'
           : 'hover:bg-[var(--ui-bg)]',
@@ -1623,7 +2407,7 @@ function OfficeLeaderboard({ entries, selectedProfile, onSelect }) {
           style: { backgroundColor: profileColor(entry.profile) || '#888' },
         }),
         jsx('span', {
-          className: 'flex-1 truncate text-xs text-[var(--ui-text-secondary)]',
+          className: 'flex-1 min-w-0 truncate text-xs text-[var(--ui-text-secondary)]',
           children: entry.profile,
         }),
         jsx('span', {
@@ -1639,11 +2423,11 @@ function OfficeLeaderboard({ entries, selectedProfile, onSelect }) {
     className: 'flex flex-col gap-2 p-3 rounded-md border border-[var(--ui-stroke-secondary)] bg-[var(--ui-bg)]',
     children: [
       jsxs('div', {
-        className: 'flex items-center justify-between gap-2',
+        className: 'flex flex-wrap items-center justify-between gap-2',
         children: [
           jsx('span', {
             className: 'text-xs font-semibold text-[var(--ui-text-secondary)]',
-            children: 'Leaderboard',
+            children: 'Recorded-session usage',
           }),
           jsx(SegmentedControl, {
             value: metric,
@@ -1656,14 +2440,14 @@ function OfficeLeaderboard({ entries, selectedProfile, onSelect }) {
         ],
       }),
       body.length
-        ? jsx('div', { className: 'flex flex-col gap-0.5', children: body })
+        ? jsx('div', { className: 'flex flex-col gap-0.5 max-h-[360px] overflow-y-auto min-w-0', children: body })
         : jsx('div', {
             className: 'text-xs text-[var(--ui-text-tertiary)]',
             children: 'No profiles to rank yet.',
           }),
       jsx('div', {
         className: 'text-[10px] leading-snug text-[var(--ui-text-tertiary)]',
-        children: 'Click a row to inspect that profile.',
+        children: 'Visible profiles only · All recorded sessions (not today). Cost uses actual USD or estimated fallback. Click a profile to inspect.',
       }),
     ],
   })
@@ -1710,64 +2494,56 @@ function OfficePage({ ctx, prefs }) {
       description: String(query.error && query.error.message ? query.error.message : query.error || 'unknown error'),
     })
   } else {
-    const all = Array.isArray(query.data) ? query.data : []
-    const entries = hideOffline ? all.filter((e) => e && e.online) : all
-    const selectedEntry = selectedProfile
-      ? entries.find((e) => e && e.profile === selectedProfile) || null
-      : null
-    const selectedIndex = selectedEntry ? entries.indexOf(selectedEntry) : -1
-
-    if (all.length === 0) {
-      body = jsx(EmptyState, {
-        title: 'No profiles found',
-        description: 'gateway_state.json was not readable for any profile.',
-      })
-    } else if (entries.length === 0) {
-      body = jsx(EmptyState, {
-        title: 'Every profile is offline',
-        description: 'Nothing is running right now. Turn off "Hide offline profiles" in Settings to see the empty desks.',
-      })
-    } else {
-      body = jsxs('div', {
-        className: 'flex flex-col gap-3 w-full h-full',
-        children: [
-          jsxs('div', {
-            className: 'flex flex-col lg:flex-row gap-3 flex-1 min-h-[420px]',
-            children: [
-              jsx('div', {
-                className: 'flex-1 min-h-[380px]',
-                children: jsx(OfficeCanvas, { entries, selectedIndex, onPick: pick }),
-              }),
-              jsxs('div', {
-                className: 'w-full lg:w-[300px] shrink-0 flex flex-col gap-2',
-                children: [
-                  selectedEntry
-                    ? jsx(OfficeDetailPanel, {
-                        entry: selectedEntry,
-                        onClose: () => setSelectedProfile(null),
-                      })
+    const { all, visible: entries, selected: selectedEntry, selectedIndex } = officeView(query.data, hideOffline, selectedProfile)
+    const empty = all.length === 0
+      ? jsx(EmptyState, { title: 'No profiles found', description: 'The backend returned no profiles.' })
+      : entries.length === 0
+        ? jsx(EmptyState, { title: 'Every profile is offline', description: 'Offline profiles are hidden. Turn off "Hide offline profiles" in Settings to see their desks and usage.' })
+        : null
+    body = jsxs('div', {
+      className: 'flex flex-col gap-3 min-w-0',
+      children: [
+        jsx(OfficeOverview, { entries: all }),
+        jsx('p', {
+          className: 'text-xs text-[var(--ui-text-tertiary)]',
+          'data-office-filter': true,
+          children: 'Showing ' + entries.length + ' of ' + all.length + ' profiles in scene and usage list' + (hideOffline ? ' · Offline hidden' : ' · Offline included'),
+        }),
+        jsxs('div', {
+          className: 'grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_300px] items-start gap-3 min-w-0',
+          children: [
+            jsx('div', {
+              className: 'min-w-0',
+              style: empty ? undefined : { height: 'clamp(380px, 62vh, 760px)' },
+              children: empty || jsx(OfficeCanvas, { entries, selectedIndex, onPick: pick }),
+            }),
+            jsxs('aside', {
+              'aria-label': 'Profile usage and details',
+              className: 'min-w-0 w-full flex flex-col gap-2',
+              children: [
+                selectedEntry && selectedIndex < 0
+                  ? jsx('p', { className: 'text-xs text-[var(--ui-text-tertiary)]', children: selectedEntry.profile + ' is hidden from the scene/list. Details remain selected.' })
+                  : null,
+                selectedEntry
+                  ? jsx(OfficeDetailPanel, { key: selectedEntry.profile, entry: selectedEntry, onClose: () => setSelectedProfile(null) })
+                  : selectedProfile
+                    ? jsx('p', { className: 'text-xs text-[var(--ui-text-tertiary)]', children: 'The selected profile is no longer in the backend response.' })
                     : null,
-                  jsx(OfficeLeaderboard, {
-                    entries,
-                    selectedProfile,
-                    onSelect: pick,
-                  }),
-                ],
-              }),
-            ],
-          }),
-          jsx(OfficeStats, { entries }),
-          jsx(OfficeLegend, { entries }),
-        ],
-      })
-    }
+                jsx(OfficeLeaderboard, { entries, selectedProfile, onSelect: pick }),
+              ],
+            }),
+          ],
+        }),
+      ],
+    })
   }
 
   return jsx('div', {
-    className: 'flex flex-col gap-3 p-4 w-full h-full',
+    className: 'flex flex-col gap-3 p-4 w-full h-full min-h-0 min-w-0 overflow-y-auto',
+    'data-office-page': true,
     children: [
       jsxs('div', {
-        className: 'flex items-baseline justify-between',
+        className: 'flex flex-wrap items-baseline justify-between gap-2',
         children: [
           jsx('h1', {
             className: 'text-lg font-semibold text-[var(--ui-text-secondary)]',
@@ -1776,8 +2552,8 @@ function OfficePage({ ctx, prefs }) {
           jsx('span', {
             className: 'text-xs text-[var(--ui-text-tertiary)]',
             children:
-              'Isometric 2D · click a desk to inspect · refreshes every ' +
-              pollSeconds + 's',
+              'Isometric 2D · click a desk to inspect · ⌘/Ctrl + scroll to zoom · ' +
+              'refreshes every ' + pollSeconds + 's',
           }),
         ],
       }),

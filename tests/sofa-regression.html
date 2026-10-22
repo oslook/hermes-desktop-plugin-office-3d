@@ -1,0 +1,63 @@
+<!doctype html><meta charset="utf-8"><title>Sofa real canvas regression</title>
+<style>body{margin:0;font:14px system-ui;background:#20242b;color:#ddd}section{padding:12px}h2{margin:0 0 8px}canvas{display:block;max-width:100%}pre{white-space:pre-wrap}</style>
+<body><div id="panels"></div><pre id="result"></pre>
+<script type="module">
+import * as after from './after.mjs';
+import * as before from './before.mjs';
+const IX=Math.SQRT1_2, S=145, W=640,H=520;
+const LL={sx:0,sy:0,sofaW:3.2,sofaD:1}; // identical camera and footprint before/after
+const ox=210,oy=190;
+const results={geometry:[],pixels:[],negativeControl:[],themes:[]};
+const assert=(ok,msg)=>{if(!ok)throw Error(msg);results.geometry.push(msg)};
+const D=after.sofaDims();
+assert(D.legH>0 && D.legH<D.seatZ,'legs support elevated seat');
+assert(D.armTop>D.seatZ && D.backTop>D.armTop,'world z: seat < arms < back');
+assert(D.backTop-D.seatZ>=.45 && D.backTop-D.seatZ<=.65,'normal seat-relative back height .45..65');
+assert(D.armTop-D.seatZ>=.2 && D.armTop-D.seatZ<=.3,'normal seat-relative arm height .20..30');
+assert(LL.sy+LL.sofaD-.22>LL.sy,'back remains on large-y edge, facing table at smaller y');
+// Independent ray/box oracle: along a viewing ray (x,y,z)+t*(1,1,1)
+// iso(x,y,z) is constant; the largest t is the frontmost visible surface.
+function boxes(d){return [
+ {id:'far',lo:[0,0,d.legH],hi:[d.armW,1,d.armTop]},
+ {id:'frame',lo:[d.armW,0,d.legH],hi:[3.2-d.armW,1,d.seatZ]},
+ {id:'back',lo:[d.armW,.78,d.seatZ],hi:[3.2-d.armW,1,d.backTop]},
+ {id:'near',lo:[3.2-d.armW,0,d.legH],hi:[3.2,1,d.armTop]}];}
+function hits(px,py,d,scale=S){const u=(px-ox)/scale,v=(py-oy)/scale;
+ const p=[v+u/(2*IX),v-u/(2*IX),0];
+ return boxes(d).map(b=>{const lo=Math.max(...b.lo.map((v,i)=>v-p[i]));const hi=Math.min(...b.hi.map((v,i)=>v-p[i]));return {...b,t:hi,valid:hi>=lo};}).filter(b=>b.valid).sort((a,b)=>b.t-a.t);}
+function owner(x,y,d,scale){return hits(x,y,d,scale)[0]?.id;}
+function classify(r,g,b){if(r>g*1.6&&r>b*1.6)return 'back';if(g>r*1.6&&g>b*1.6)return 'far';if(b>r*1.6&&b>g*1.6)return 'near';if(Math.max(r,g,b)-Math.min(r,g,b)<10)return 'frame';return 'other';}
+const tint={back:'#ee2222',arm:'#22dd22',farArm:'#22dd22',nearArm:'#2222ee',sofa:'#888888',seam:'#ffff00',leg:'#111111'};
+function render(mod,theme,tinted,scale=S){document.documentElement.classList.toggle('dark',theme==='dark');
+ const cv=document.createElement('canvas');cv.width=W;cv.height=H;
+ const P=mod.buildPalette(cv),c=cv.getContext('2d');c.fillStyle=P.bg;c.fillRect(0,0,W,H);
+ mod.drawSofa(c,ox,oy,scale,P,LL,tinted?tint:null);return {cv,c,P};}
+function check(mod,theme,scale=S){const d=mod.sofaDims(),{c}=render(mod,theme,true,scale),im=c.getImageData(0,0,W,H).data;
+ let tested=0,mismatches=0,seamsOnBack=0,farBehindBack=0,nearBeforeBack=0;const examples=[];
+ for(let y=3;y<H-3;y+=2)for(let x=3;x<W-3;x+=2){const hs=hits(x+.5,y+.5,d,scale),id=hs[0]?.id;if(!id)continue;
+ // Stay away from antialiasing and the deliberate 1px edge light.
+ if([[3,0],[-3,0],[0,3],[0,-3]].some(([dx,dy])=>owner(x+.5+dx,y+.5+dy,d,scale)!==id))continue;
+ const i=(y*W+x)*4,[r,g,b]=im.slice(i,i+3),got=classify(r,g,b);
+ // Only furniture surfaces above the leg contact zone; seat seams are allowed on seat.
+ if(id==='frame')continue;
+ tested++;if(id==='back'&&r>180&&g>180&&b<60)seamsOnBack++;
+ // Old drawSofa only supports one shared arm tint; don't count that as an error.
+ const expected=(mod===before&&id==='near')?'far':id;
+ if(got!==expected){mismatches++;if(examples.length<4)examples.push({x,y,id,got,r,g,b});}
+ if(id==='back'&&hs.some(h=>h.id==='far'))farBehindBack++;
+ if(id==='near'&&hs.some(h=>h.id==='back'))nearBeforeBack++;
+ }
+ return {theme,scale,tested,mismatches,seamsOnBack,farBehindBack,nearBeforeBack,examples};}
+for(const theme of ['dark','light']){
+ const sec=document.createElement('section'),title=document.createElement('h2');title.textContent=theme+' — BEFORE saved dirty module | AFTER fixed module; real colours / diagnostic colours';sec.append(title);
+ const big=document.createElement('canvas');big.width=W*2;big.height=H*2;const bc=big.getContext('2d');
+ for(const [j,tinted] of [false,true].entries())for(const [i,mod]of [before,after].entries()){
+ const {cv,P}=render(mod,theme,tinted);bc.drawImage(cv,i*W,j*H);bc.fillStyle=theme==='dark'?'#fff':'#111';bc.font='16px system-ui';bc.fillText((i?'AFTER':'BEFORE')+(tinted?(i?' — red back, green far arm, blue near arm':' — red back, green BOTH arms (old tint API)'):' — actual palette'),i*W+20,j*H+28);
+ if(!tinted)results.themes.push({theme,revision:i?'after':'before',paletteMode:P.mode,bg:P.bg});}
+ big.id='comparison-'+theme;sec.append(big);document.querySelector('#panels').append(sec);
+ for(const scale of [60,100,145])results.pixels.push(check(after,theme,scale));
+ results.negativeControl.push(check(before,theme));
+}
+results.pass=results.pixels.every(r=>r.tested>200&&r.mismatches===0&&r.seamsOnBack===0&&r.farBehindBack>0&&r.nearBeforeBack>0)&&results.negativeControl.every(r=>r.mismatches>0)&&results.themes.every(r=>r.theme===r.paletteMode);
+window.__results=results;window.__ready=true;document.querySelector('#result').textContent=JSON.stringify(results,null,2);
+</script>

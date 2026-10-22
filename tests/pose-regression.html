@@ -1,0 +1,155 @@
+<!doctype html><meta charset="utf-8"><title>Office poses — real browser Canvas2D, not Electron</title>
+<style>body{margin:0;background:#252932;color:#ddd;font:14px system-ui}h2{margin:8px}section{display:flex;flex-wrap:wrap}figure{margin:6px}canvas{display:block}pre{white-space:pre-wrap}</style>
+<h2>Real browser Canvas2D — saved dirty baseline / current; not Electron</h2><div id="panels"></div><pre id="result"></pre>
+<script type="module">
+import * as A from './after.mjs';import * as B from './before.mjs';
+import * as C from './legacy-before.mjs';
+import * as AD from './after-diagnostic.mjs';import * as BD from './before-diagnostic.mjs';
+const R={checks:0,geometry:0,depth:[],stationary:[],renders:0,errors:[]};window.__results=R;
+R.lengths=Array.from({length:4},()=>({min:Infinity,max:-Infinity}));R.eyes=0;
+function check(v,m){R.checks++;if(!v)throw Error(m)}
+const slot={x:0,y:0},profile='dev',entry={profile,online:true,busy:true};
+function time(p){return ((p-A.posePhase(profile)+1)%1)*12}
+function cv(){const v=document.createElement('canvas');v.width=480;v.height=410;return v}
+function palette(v,theme){document.documentElement.classList.toggle('dark',theme==='dark');const P=A.buildPalette(v);return {...P,P}}
+function render(mod,kind,theme,scale,t,tint=false,name=profile){const v=cv(),c=v.getContext('2d'),p=palette(v,theme);if(tint)p.P.skin='#ff00ff';c.fillStyle=p.bg;c.fillRect(0,0,v.width,v.height);
+ if(kind==='desk')mod.drawDeskAndAvatar(c,155,235,scale,slot,entry,0,t,p);
+ else mod.drawLoungeAvatar(c,230,260,scale,slot,{...entry,profile:name,busy:false},0,t,0,p);
+ R.renders++;return v}
+function panel(id,label,v){const f=document.createElement('figure');f.id=id;const h=document.createElement('figcaption');h.textContent=label;f.append(h,v);return f}
+function pixels(v){return v.getContext('2d').getImageData(0,0,v.width,v.height).data}
+function project(p,s=1){return A.iso(...p,s)}
+function finite(v){if(typeof v==='number')return Number.isFinite(v);if(Array.isArray(v))return v.every(finite);if(v&&typeof v==='object')return Object.values(v).every(finite);return true}
+function lengths(p){const dist=(a,b)=>Math.hypot(...a.map((v,i)=>v-b[i]));return [dist(p.shoulders[0],p.elbows[0]),dist(p.elbows[0],p.lapHand),dist(p.shoulders[1],p.elbows[1]),dist(p.elbows[1],p.hand)]}
+function stable(p){return lengths(p).every((v,i)=>Math.abs(v-[.33,.30,.32,.32][i])<1e-10)}
+function magenta(v,p,s){const c=v.getContext('2d'),d=c.getImageData(0,0,v.width,v.height).data;const [px,py]=project(p,s);let n=0;for(let y=Math.floor(235+py-.095*s);y<235+py+.095*s;y++)for(let x=Math.floor(155+px-.10*s);x<155+px+.10*s;x++){if(x<0||y<0||x>=v.width||y>=v.height)continue;const i=(y*v.width+x)*4;if(d[i]===255&&d[i+1]===0&&d[i+2]===255)n++}return n}
+try{
+ for(const name of ['dev','default','research','ops'])for(let i=0;i<=240;i++){
+ const t=i/20,d=A.deskPose(slot,name,t),p=A.loungePose(slot,name,t);check(finite(d)&&finite(p),'finite pose');
+ check(stable(p),'both tea arms fixed bone lengths');lengths(p).forEach((v,i)=>{R.lengths[i].min=Math.min(R.lengths[i].min,v);R.lengths[i].max=Math.max(R.lengths[i].max,v)});
+ const prev=A.loungePose(slot,name,t-.001);check(Math.hypot(...p.elbows[1].map((v,i)=>v-prev.elbows[1][i]))<.001,'no elbow jumps');
+ check(Math.hypot(...p.elbows[0].map((v,i)=>v-prev.elbows[0][i]))<.001,'lap elbow continuous');
+ check(p.elbows[1][0]>p.shoulders[1][0]&&p.elbows[0][0]<p.shoulders[0][0],'outward elbow bend, no branch flip');
+ const saved=B.loungePose(slot,name,t);check(JSON.stringify(p.cup)===JSON.stringify(saved.cup)&&JSON.stringify(p.hand)===JSON.stringify(saved.hand),'cup trajectory preserved, not lowered to hide stretch');
+ check(JSON.stringify(p.legs)===JSON.stringify(saved.legs),'hips knees feet unchanged');
+ check(p.seatZ===.46&&p.legs.every(l=>l.foot[2]===.05),'hips/feet planted');
+ check(Math.hypot(...p.hand.map((v,j)=>v-p.cup[j]))<.09,'grasp always contacts cup');
+ const rim=project([p.cup[0],p.cup[1],p.cup[2]+.082]),head=project(p.head);
+ // drawHead mouth is eye centre + .42r arc centre + .17r arc offset.
+ const mouth=[head[0]+.19/Math.hypot(.19,.98)*.26*.26,head[1]+.85*.26];
+ if(p.stage==='sip')check(Math.hypot(rim[0]-mouth[0],rim[1]-mouth[1])<.025,'rim reaches lower lip');
+ check(rim[1]>head[1]+.18,'rim never penetrates upper face');
+ for(let a=0;a<2;a++){const h=d.hands[a],S=d.S;check(h[0]>S.kbX&&h[0]<S.kbX+S.kbW&&h[1]>S.kbY&&h[1]<S.kbY+S.kbD,'hands within keys');check(h[2]>.81&&h[2]<.83,'palm lower edge contacts .795 keyboard');check(project(d.elbows[a])[1]>project(d.shoulders[a])[1],'elbow falls naturally');}
+ R.geometry++;
+ }
+ check(A.posePhase('dev')!==A.posePhase('ops'),'identity phase differs');
+ R.sleeve=[];check(JSON.stringify(A.deskLayout(slot))===JSON.stringify(B.deskLayout(slot)),'approved workstation/shoulder coordinates unchanged');
+ // Furniture-only workstation must remain pixel-identical, not merely similar.
+ for(const theme of ['dark','light'])for(const scale of [24,48,110]){
+ const a=cv(),b=cv(),p=palette(a,theme);for(const [mod,v]of [[A,a],[B,b]]){const c=v.getContext('2d');c.fillStyle=p.bg;c.fillRect(0,0,480,410);mod.drawDeskAndAvatar(c,155,235,scale,slot,{...entry,busy:false},0,0,p)}
+ const pa=pixels(a),pb=pixels(b);check(pa.every((x,i)=>x===pb[i]),'all workstation furniture byte-identical');}
+ // Explicit joins, including cycle wrap: check positions AND near-zero velocity.
+ for(const name of ['dev','default','research','ops'])for(const phase of [0,.25,.48,.64,.88,1]){const t=(phase-A.posePhase(name))*12,p=A.loungePose(slot,name,t),l=A.loungePose(slot,name,t-1e-5),r=A.loungePose(slot,name,t+1e-5);for(const key of ['hand','cup'])check(Math.hypot(...r[key].map((v,i)=>v-l[key][i]))<1e-6,'smooth action joins');check(stable(p),'stable join bones')}
+ // The actual saved dirty fixed-elbow implementation must fail the new guard.
+ R.oldBoneRange={min:Infinity,max:-Infinity,failures:0};for(let i=0;i<=240;i++){const p=C.loungePose(slot,profile,i/20),v=lengths(p)[3];R.oldBoneRange.min=Math.min(R.oldBoneRange.min,v);R.oldBoneRange.max=Math.max(R.oldBoneRange.max,v);if(!stable(p))R.oldBoneRange.failures++}check(R.oldBoneRange.failures>0,'saved fixed elbow negative control MUST FAIL');
+ // Complete tea-avatar pixels, not merely an isolated drawHead: expected eye
+ // pixels must survive the later arm/cup paint. No diagnostic product hook.
+ for(const name of ['dev','default','research','ops'])for(const theme of ['dark','light'])for(const scale of [24,48,110])for(let phase=0;phase<1;phase+=.025){const t=(phase-A.posePhase(name))*12,p=A.loungePose(slot,name,t);check(stable(p),'theme/scale/full-cycle bones');if(Math.sin(t*1.4)>.965||p.headR*scale<7)continue;const v=render(A,'tea',theme,scale,t,false,name),ref=cv(),c=ref.getContext('2d'),pal=palette(ref,theme),[x,y]=project(p.head,scale),hx=230+x,hy=260+y,r=p.headR*scale;A.drawHead(c,hx,hy,r,{skin:pal.skin,skinShadow:pal.skinShadow,hair:pal.hair,hairLit:pal.hairLit,facing:[.19,.98],blink:1});const a=pixels(v),b=pixels(ref),fy=.98/Math.hypot(.19,.98),fx=.19/Math.hypot(.19,.98);for(const side of [-1,1]){const ex=hx+fx*r*.26+side*r*.29*fy,ey=hy+fy*r*.26;let samples=0;for(let yy=Math.floor(ey-r*.16);yy<=ey+r*.16;yy++)for(let xx=Math.floor(ex-r*.12);xx<=ex+r*.12;xx++){const i=(yy*v.width+xx)*4;if(b[i+3]===255&&b[i]<100&&b[i+1]<100&&b[i+2]>=b[i]){check(a[i]===b[i]&&a[i+1]===b[i+1]&&a[i+2]===b[i+2],'complete tea eye occluded');samples++}}check(samples>0,'eye test has actual raster samples');R.eyes++}}
+ for(const theme of ['dark','light'])for(const scale of [24,48,110])for(const phase of [0,.3,.48,.56,.7,.88]){
+ const t=time(phase);render(A,'tea',theme,scale,t);const d=A.deskPose(slot,profile,t),v=render(A,'desk',theme,scale,t,true);
+ if(scale===110){const n=d.hands.map(p=>magenta(v,p,scale));R.depth.push({theme,phase,hands:n});check(n[0]>0&&n[1]>n[0],'far hand partially occluded, near hand visible');}
+ }
+ // drawLounge contains furniture only: byte-identical at all times, including three table cups.
+ const denseTimes=Array.from({length:121},(_,i)=>i/10);
+ for(const theme of ['dark','light'])for(const scale of [24,48,110]){
+ let base=null;for(const t of denseTimes){const v=cv(),c=v.getContext('2d'),p=palette(v,theme);c.fillStyle=p.bg;c.fillRect(0,0,480,410);const text=[];const fill=c.fillText.bind(c);c.fillText=(s,x,y)=>{if(s==='🍵')text.push([x,y]);fill(s,x,y)};A.drawLounge(c,180,100,scale,p.stroke,p.tint,p.accent,t,p,{x:0,y:0});const data=pixels(v);if(base){check(data.every((x,i)=>x===base[i]),'lounge/table cup pixels stationary')}else base=data;check(text.length===3,'three independent table cups');R.stationary.push({theme,scale,t,cups:text});}
+ // Work desk mug ROI is away from avatar and blinking monitor.
+ let mugBase=null;for(const t of denseTimes){const v=render(A,'desk',theme,scale,t),S=A.deskLayout(slot),[x,y]=project([S.mugX,S.mugY,.825],scale),r=Math.ceil(.15*scale)+1;const d=v.getContext('2d').getImageData(Math.round(155+x)-r,Math.round(235+y)-r,r*2,r*2).data;if(mugBase)check(d.every((x,i)=>x===mugBase[i]),'work desk mug pixels stationary');else mugBase=d;}
+ }
+ for(const theme of ['dark','light'])for(const scale of [48,110])for(const kind of ['desk','tea']){
+ const section=document.createElement('section');section.id=`compare-${kind}-${theme}-${scale}`;
+ for(const [name,mod]of [['before',B],['after',A]])section.append(panel(`${name}-${kind}-${theme}-${scale}`,`${name} ${kind} ${theme} scale ${scale}`,render(mod,kind,theme,scale,time(0))));document.querySelector('#panels').append(section);
+ }
+ for(const theme of ['dark','light'])for(const scale of [48,110]){const section=document.createElement('section');section.id=`stages-${theme}-${scale}`;for(const [stage,phase]of [['rest',.1],['lift-start',.30],['lift',.36],['lift-end',.44],['sip',.52],['sip-end',.60],['lower',.76],['rest-end',.9]])section.append(panel(`${stage}-${theme}-${scale}`,`${stage} phase ${phase} scale ${scale}`,render(A,'tea',theme,scale,time(phase))));document.querySelector('#panels').append(section)}
+ // Actual head rendering guards: no eyes below radius gate or on the back;
+ // face eye-row must retain warm skin above and between the eyes.
+ for(const theme of ['dark','light'])for(const radius of [6,14,30])for(const facing of [[.816,-.577],[.19,.98]]){
+ const v=cv(),c=v.getContext('2d'),p=palette(v,theme);c.fillStyle='#ff00ff';c.fillRect(0,0,480,410);A.drawHead(c,100,100,radius,{skin:p.skin,skinShadow:p.skinShadow,hair:p.hair,hairLit:p.hairLit,facing,eyeColor:'#00ffff'});
+ const data=pixels(v);let eyes=0;for(let i=0;i<data.length;i+=4)if(data[i]<40&&data[i+1]>200&&data[i+2]>200)eyes++;
+ check(radius<7||facing[1]<0 ? eyes===0:eyes>0,'face gate and back-of-head eye pixels');
+ if(radius>=14&&facing[1]>0){for(const dx of [-.24,.05,.33]){const x=Math.round(100+dx*radius),y=Math.round(100-.07*radius),i=(y*480+x)*4;check(data[i]-data[i+2]>30,'skin above eyes, not hair')}}
+ }
+ // The old floating table cups must fail the stationary pixel comparison.
+ // Full drawFrame tea scene, including furniture and the actual scene painter.
+ // Centre the tea sitter using the returned camera, at fit and enlarged zoom.
+ R.sceneEyes=0;
+ for(const name of ['dev','default','research','ops'])for(const theme of ['dark','light'])for(const zoom of [1,2.5])for(const phase of [.1,.30,.36,.44,.52,.60,.76,.9]){
+ const t=(phase-A.posePhase(name))*12;if(Math.sin(t*1.4)>.965)continue;
+ const v=cv(),c=v.getContext('2d'),dpr=Math.max(1,Math.min(3,devicePixelRatio||1));v.width=900*dpr;v.height=520*dpr;v.style.width='900px';v.style.height='520px';document.body.append(v);palette(v,theme);
+ const entries=Array.from({length:6},(_,i)=>({profile:i===3?name:'worker-'+i,online:true,busy:i!==3,idle_since:null}));
+ const first=A.drawFrame(v,c,entries,t,-1,{zoom,panX:0,panY:0}),seat=A.loungeSlot(0,1,first.layout.lounge),pose=A.loungePose(seat,name,t),head=project(pose.head,first.scale);
+ const frame=A.drawFrame(v,c,entries,t,-1,{zoom,panX:450-first.ox-head[0],panY:260-first.oy-head[1]});
+ const ref=cv();ref.width=v.width;ref.height=v.height;const rc=ref.getContext('2d'),P=palette(ref,theme),r=pose.headR*frame.scale;rc.scale(dpr,dpr);A.drawHead(rc,450,260,r,{skin:P.skin,skinShadow:P.skinShadow,hair:P.hair,hairLit:P.hairLit,facing:[.19,.98],blink:1});
+ const a=pixels(v),b=pixels(ref);let samples=0,inkA=0,inkB=0;const skinR=parseInt(P.skin.slice(1,3),16);for(let y=Math.floor((260-.05*r)*dpr);y<(260+.45*r)*dpr;y++)for(let x=Math.floor((450-.5*r)*dpr);x<(450+.5*r)*dpr;x++){const i=(y*v.width+x)*4;if(b[i+3]===255&&Math.abs(y/dpr-(260+.98/Math.hypot(.19,.98)*r*.26))<Math.max(1.5,r*.13)&&[-1,1].some(side=>Math.abs(x/dpr-(450+.19/Math.hypot(.19,.98)*r*.26+side*r*.29*.98/Math.hypot(.19,.98)))<Math.max(1.5,r*.15))){inkA+=Math.max(0,skinR-a[i]);inkB+=Math.max(0,skinR-b[i]);samples++}}check(samples>0&&inkB>0,'full scene eye raster sampled');check(Math.abs(inkA-inkB)<Math.max(4,inkB*.15),'full tea scene eye coverage matches isolated head '+JSON.stringify({name,theme,zoom,phase,inkA,inkB}));R.sceneEyes++;v.remove();
+ }
+ {let first;let changed=false;for(const t of [0,1.7]){const v=cv(),c=v.getContext('2d'),p=palette(v,'dark');const fill=c.fillText.bind(c);c.fillText=(text,x,y)=>fill(text,x,y+(text==='🍵'?Math.sin(t*1.7)*2:0));A.drawLounge(c,180,100,110,p.stroke,p.tint,p.accent,t,p,{x:0,y:0});const data=pixels(v);if(first)changed=data.some((x,i)=>x!==first[i]);else first=data;}check(changed,'injected former floating tableware negative control fails');R.tableNegativeControl=changed;}
+ for(const theme of ['dark','light']){const section=document.createElement('section');section.id='scene-'+theme;for(const [name,mod]of [['before',B],['after',A]]){const v=cv();const dpr=Math.max(1,Math.min(3,devicePixelRatio||1));v.width=900*dpr;v.height=520*dpr;v.style.width='900px';v.style.height='520px';document.body.append(v);const c=v.getContext('2d');palette(v,theme);const entries=Array.from({length:6},(_,i)=>({profile:['default','dev','ops','research','data','sandbox'][i],online:i!==5,busy:i<3,idle_since:null}));mod.drawFrame(v,c,entries,time(.56),-1);section.append(panel(name+'-scene-'+theme,name+' full scene '+theme,v))}document.querySelector('#panels').append(section)}
+ // Blink oracle is separate from open-eye visibility: closed eyes legitimately
+ // lose vertical ink. Compare the complete avatar with the same blink=0.14 head.
+ R.blinks=0;
+ for(const name of ['dev','default','research','ops'])for(const theme of ['dark','light']){
+ const t=Math.PI/2/1.4,p=A.loungePose(slot,name,t),scale=110,v=render(A,'tea',theme,scale,t,false,name),ref=cv(),c=ref.getContext('2d'),pal=palette(ref,theme),[hx,hy]=project(p.head,scale),r=p.headR*scale;
+ A.drawHead(c,230+hx,260+hy,r,{skin:pal.skin,skinShadow:pal.skinShadow,hair:pal.hair,hairLit:pal.hairLit,facing:[.19,.98],blink:.14});
+ const a=pixels(v),b=pixels(ref);let n=0;for(let y=Math.floor(260+hy);y<260+hy+.4*r;y++)for(let x=Math.floor(230+hx-.4*r);x<230+hx+.4*r;x++){const i=(y*v.width+x)*4;if(Math.abs(y-(260+hy+.98/Math.hypot(.19,.98)*r*.26))<1.7&&[-1,1].some(side=>Math.abs(x-(230+hx+.19/Math.hypot(.19,.98)*r*.26+side*r*.29*.98/Math.hypot(.19,.98)))<r*.12)){check(Math.abs(a[i]-b[i])<=2&&Math.abs(a[i+1]-b[i+1])<=2&&Math.abs(a[i+2]-b[i+2])<=2,'blink eye survives complete avatar paint');n++}}check(n>0,'closed-eye ink sampled');R.blinks++;
+ }
+ /** Verify actual Canvas commands, not only the pure pose return values. */
+ R.drawnArms=0;
+ for(const name of ['dev','default','research','ops'])for(const scale of [24,48,110])for(let i=0;i<=120;i++){
+ const t=i/10,p=A.loungePose(slot,name,t),v=cv(),c=v.getContext('2d'),pal=palette(v,'dark'),paths=[];let start;
+ const move=c.moveTo.bind(c),line=c.lineTo.bind(c);let path=[];
+ c.moveTo=(x,y)=>{path=[[x,y]];paths.push(path);move(x,y)};c.lineTo=(x,y)=>{path.push([x,y]);line(x,y)};
+ A.drawLoungeAvatar(c,230,260,scale,slot,{...entry,profile:name,busy:false},0,t,0,pal);
+ for(const [a,b,w]of [[p.shoulders[0],p.elbows[0],.145],[p.elbows[0],p.lapHand,.145*.86],[p.shoulders[1],p.elbows[1],.145],[p.elbows[1],p.hand,.145*.86]]){
+ const u=project(a,scale),v=project(b,scale),dx=v[0]-u[0],dy=v[1]-u[1],len=Math.hypot(dx,dy),width=Math.max(1.4,.145*scale)*(w/.145);
+ const expected=[230+u[0]-dy/len*width*.5-dx/len*width*.12,260+u[1]+dx/len*width*.5-dy/len*width*.12];
+ check(paths.some(q=>q.length===4&&Math.hypot(q[0][0]-expected[0],q[0][1]-expected[1])<1e-8),'actual tapered arm facet attaches to fixed bone');R.drawnArms++}
+
+ }
+ R.shoulderPixels=[];
+ for(const theme of ['dark','light'])for(const scale of [48,110]){
+ const section=document.createElement('section');section.id=`diagnostic-${theme}-${scale}`;
+ for(const [name,mod]of [['before',BD],['after',AD]])section.append(panel(`${name}-diagnostic-${theme}-${scale}`,`${name} right=-x magenta / left=+x cyan ${theme} ${scale}`,render(mod,'desk',theme,scale,time(.1))));document.querySelector('#panels').append(section);
+ const v=render(AD,'desk',theme,scale,time(.1)),d=A.deskPose(slot,profile,time(.1)),data=pixels(v),s=project(d.shoulders[0],scale),e=project(d.elbows[0],scale);let visible=0,hidden=0,attached=0;
+ for(let j=0;j<=100;j++){const f=j/100,x=Math.round(155+s[0]+(e[0]-s[0])*f),y=Math.round(235+s[1]+(e[1]-s[1])*f),i=(y*v.width+x)*4,isSleeve=data[i]>150&&data[i+1]<80&&data[i+2]>150;if(isSleeve){visible++;if(f<.25)attached++}else hidden++}
+ for(let yy=Math.floor(235+s[1]-.10*scale);yy<=235+s[1]+.10*scale;yy++)for(let xx=Math.floor(155+s[0]-.10*scale);xx<=155+s[0]+.10*scale;xx++){const k=(yy*v.width+xx)*4;if(data[k]>150&&data[k+1]<80&&data[k+2]>150)attached++}
+ check(attached>0,'right sleeve visible at anatomical shoulder');check(hidden>0,'torso still masks part of upper arm');R.shoulderPixels.push({theme,scale,visible,hidden,attached});
+ }
+ // Complete seated figure, not only isolated head: forehead/cheeks/chin and
+ // the actual new mouth must survive later body/arm paint in both resting phases.
+ R.faceOwnership=0;
+ for(const name of ['dev','default','research','ops'])for(const theme of ['dark','light'])for(const scale of [24,48,110])for(const phase of [.1,.9]){
+ const t=(phase-A.posePhase(name))*12,p=A.loungePose(slot,name,t),v=render(A,'tea',theme,scale,t,false,name),ref=cv(),c=ref.getContext('2d'),P=palette(ref,theme),h=project(p.head,scale),hx=230+h[0],hy=260+h[1],r=p.headR*scale;
+ A.drawHead(c,hx,hy,r,{skin:P.skin,skinShadow:P.skinShadow,hair:P.hair,hairLit:P.hairLit,facing:[.19,.98],blink:Math.sin(t*1.4)>.965?.14:1});
+ const a=pixels(v),b=pixels(ref);
+ for(const [dx,dy]of [[0,-.15],[-.45,.45],[.3,.67],[0,.75]]){const x=Math.round(hx+dx*r),y=Math.round(hy+dy*r),i=(y*v.width+x)*4;check(b[i]-b[i+2]>30&&Math.abs(a[i]-b[i])<=2&&Math.abs(a[i+1]-b[i+1])<=2&&Math.abs(a[i+2]-b[i+2])<=2,'full character face skin ownership '+JSON.stringify({name,theme,scale,phase,dx,dy,actual:Array.from(a.slice(i,i+4)),expected:Array.from(b.slice(i,i+4))}));R.faceOwnership++;}
+ if(r>=7){let n=0;for(let y=Math.floor(hy+.84*r);y<=hy+.86*r;y++)for(let x=Math.ceil(hx+(.19/Math.hypot(.19,.98)*.26-.10)*r);x<=hx+(.19/Math.hypot(.19,.98)*.26+.10)*r;x++){const i=(y*v.width+x)*4;if(b[i+3]===255){check(Math.abs(a[i]-b[i])<=4&&Math.abs(a[i+1]-b[i+1])<=4&&Math.abs(a[i+2]-b[i+2])<=4,'full character new mouth unoccluded on skin '+JSON.stringify({name,theme,scale,phase,x,y,actual:Array.from(a.slice(i,i+4)),expected:Array.from(b.slice(i,i+4))}));n++;}}check(n>0,'full character mouth has raster samples');}
+ }
+ // Style-specific raster/command oracle, independent of the previous spherical head.
+ R.lowpoly=[];
+ for(const theme of ['dark','light'])for(const radius of [6,14,30]){
+ const v=cv(),c=v.getContext('2d'),P=palette(v,theme);let arcs=0,lines=0;
+ const arc=c.arc.bind(c),line=c.lineTo.bind(c);c.arc=(...a)=>{arcs++;arc(...a)};c.lineTo=(...a)=>{lines++;line(...a)};
+ A.drawHead(c,100,100,radius,{skin:P.skin,skinShadow:P.skinShadow,hair:P.hair,hairLit:P.hairLit,facing:[.19,.98],blink:1});
+ check(arcs===0&&lines>=30,'actual skull/jaw/hair are geometric planes, not sphere');
+ const data=pixels(v),widthAt=y=>{let n=0;for(let x=60;x<140;x++)if(data[(Math.round(y)*480+x)*4+3]>200)n++;return n};
+ check(widthAt(100+radius*.75)<widthAt(100),'jaw tapers below cheekbones');
+ if(radius>=14){
+ for(const [dx,dy]of [[0,-.15],[-.45,.45],[.3,.67],[0,.94]]){const i=(Math.round(100+dy*radius)*480+Math.round(100+dx*radius))*4;check(data[i]-data[i+2]>30,'forehead cheeks chin belong to skin');}
+ const blank=cv(),bc=blank.getContext('2d');bc.stroke=()=>{};A.drawHead(bc,100,100,radius,{skin:P.skin,skinShadow:P.skinShadow,hair:P.hair,hairLit:P.hairLit,facing:[.19,.98],blink:1});const noMouth=pixels(blank);let mouth=0;for(let y=Math.floor(100+.78*radius);y<=100+.93*radius;y++)for(let x=Math.floor(100-.15*radius);x<=100+.25*radius;x++){const i=(y*480+x)*4;if(noMouth[i+3]===255&&noMouth[i]-noMouth[i+2]>30&&data[i]<noMouth[i]-3)mouth++;}check(mouth>0,'new lower-lip ink belongs entirely to skin');
+ }
+ R.lowpoly.push({theme,radius,arcs,lines});
+ }
+ {const v=cv(),c=v.getContext('2d'),P=palette(v,'dark');let arcs=0;const arc=c.arc.bind(c);c.arc=(...a)=>{arcs++;arc(...a)};B.drawHead(c,100,100,30,{skin:P.skin,skinShadow:P.skinShadow,hair:P.hair,hairLit:P.hairLit,facing:[.19,.98]});check(arcs>0,'saved sphere MUST fail faceted-head oracle');}
+ R.ok=true;
+}catch(e){R.errors.push(e.stack);R.ok=false}document.querySelector('#result').textContent=JSON.stringify(R,null,2);window.__ready=true;
+</script>
