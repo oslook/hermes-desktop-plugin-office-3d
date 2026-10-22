@@ -1,6 +1,6 @@
 name: office-3d
 label: Office 3D
-version: 1.0.3
+version: 1.1.0
 description: >-
   A live isometric office for Hermes Desktop: every profile is a person at a desk.
   A profile doing real work sits typing at its desk with a lit terminal screen; an
@@ -12,6 +12,8 @@ author: oslook
 license: MIT
 requires_hermes: ">=0.20.0"
 kind: standalone
+provides_tools:
+  - office_status
 # The backend judges profile liveness with os.kill(pid, 0). On Windows every
 # signal other than CTRL_C_EVENT/CTRL_BREAK_EVENT is routed through
 # TerminateProcess, so os.kill(pid, 0) would *kill* the target process (the

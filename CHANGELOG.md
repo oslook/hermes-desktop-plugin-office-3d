@@ -5,35 +5,58 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] - 2026-10-22
+
+### Added
+- **`office_status` agent tool** — read-only: reports which profiles are online, busy or
+  offline with aggregate session / token / cost totals, so the model can answer "who is
+  working right now?" without the Desktop app. Same privacy boundary as the backend
+  (aggregate columns only, `state.db` opened read-only).
+- **Status-bar chip** — an always-mounted summary (`🏢 2 busy` / `🏢 4 online`) at the right
+  end of the status bar; click it to open the office. It also hosts the state-change poller.
+- **⌘K palette command + keybind** — "Open Office 3D" (default `mod+shift+o`),
+  user-rebindable in Settings.
+- **Settings ▸ Plugins ▸ Office 3D** — refresh interval (2s/5s/15s/60s), hide offline
+  profiles, and opt-in desktop notifications when a profile changes state. Persisted with
+  `ctx.storage`.
+- A GitHub Actions workflow running the catalog admission gate (`hermes plugins validate`).
+
+### Fixed
+- **Desk grid overflow with 7+ profiles.** The grid was hard-coded to 3 columns and the work
+  floor to a fixed 6.5 world-units deep, so the 7th desk (y=6.9) was painted outside the
+  floor and the office spilled over. The grid and both floor extents are now computed from
+  the profile count — 3×2 for six profiles (identical to before), 3×3 for nine, 4×3 for
+  twelve, capped at 5 columns — the lounge zone follows the work floor, and the scene scale
+  clamps lower so a large install still fits the canvas.
+- README uninstall instructions no longer use `rm -rf "$HERMES_HOME/..."` (the install
+  scanner flagged it as `destructive_home_rm`); use `hermes plugins remove office-3d`.
+- `desktop/plugin.js` header comment no longer claims offline profiles are drawn greyed-out
+  in the lounge (they are not drawn at all — empty desk, dark monitor).
+
+### Changed
+- The poll interval is now a setting (default still 5s). The office page and the status-bar
+  chip share one React Query key, so they never poll twice.
+- `install.sh` now copies the single package folder; `install.ps1` was removed (Windows is
+  unsupported — see the safety note under 1.0.3).
+
 ## [1.0.3] - 2026-10-22
 
 ### Changed
 - **Catalog-ready unified-package layout.** The repo is now one installable folder:
-  `plugin.yaml` + `desktop/plugin.js` + `dashboard/{manifest.json,plugin_api.py}`.
+  `plugin.yaml` + `__init__.py` + `desktop/plugin.js` + `dashboard/{manifest.json,plugin_api.py}`.
   The old two-target split (`desktop-plugins/office-3d/` + `plugins/office-3d/dashboard/`)
   is gone — the Desktop app copies `desktop/plugin.js` into
   `$HERMES_HOME/desktop-plugins/office-3d/` itself.
 - Added `plugin.yaml` manifest (name, version, description, author, license,
   `requires_hermes: ">=0.20.0"`, `kind: standalone`, `platforms: [linux, macos]`).
-- Added `__init__.py` (agent half, registers nothing yet) so the package is a proper
-  Hermes plugin: the admission capability probe runs and `hermes plugins doctor` passes.
 - `requires_hermes` corrected to `>=0.20.0` (the unified-package desktop door landed in
   0.20.0; the README previously claimed 0.17.0+).
-- `install.sh` now copies the single package folder; `install.ps1` was removed (see below).
-- README (EN + zh-CN): new repository-layout section, `hermes plugins install` instructions,
-  and a privacy/no-credentials note.
-- Added a GitHub Actions workflow running the catalog admission gate
-  (`hermes plugins validate`) on push and PR.
 
 ### Fixed
 - **Windows safety.** `_pid_alive()` judges profile liveness with `os.kill(pid, 0)`. On
   Windows every signal other than `CTRL_C_EVENT`/`CTRL_BREAK_EVENT` is routed through
   `TerminateProcess`, so that call would **kill** the target process (the gateway). The
   check now refuses to run on Windows and the manifest declares `platforms: [linux, macos]`.
-- README uninstall instructions no longer use `rm -rf "$HERMES_HOME/..."` (the install
-  scanner flagged it as `destructive_home_rm`); use `hermes plugins remove office-3d`.
-- `desktop/plugin.js` header comment no longer claims offline profiles are drawn greyed-out
-  in the lounge (they are not drawn at all — empty desk, dark monitor).
 
 ## [1.0.2] - 2026-08-11
 

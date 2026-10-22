@@ -21,6 +21,19 @@ English | [中文](./README.zh-CN.md)
 - Bottom stat chips: **online / busy / active sessions / tokens / agents / cost** aggregated across every profile.
 - Backend reads only aggregate columns (COUNT/SUM/MAX) from each profile's `state.db` — never message contents.
 
+## Beyond the page
+
+- **Status-bar chip** — an always-mounted summary at the right end of the status bar
+  (`🏢 2 busy` when something is working, otherwise `🏢 4 online`). Click it to open the office.
+  Hover for the full breakdown.
+- **⌘K palette command + keybind** — "Open Office 3D", bound to `mod+shift+o` by default and
+  rebindable in Settings.
+- **`office_status` agent tool** — read-only. Reports which profiles are online, busy or
+  offline with aggregate session / token / cost totals, so the model can answer "who is
+  working right now?" without the Desktop app. Same privacy boundary as the backend.
+- **Settings ▸ Plugins ▸ Office 3D** — refresh interval (2s / 5s / 15s / 60s), hide offline
+  profiles, and opt-in desktop notifications when a profile changes state.
+
 ## Built with
 
 - **@hermes/plugin-sdk** — Hermes Desktop plugin API (single-file ESM, no build step)
@@ -35,8 +48,9 @@ This repo is a single **unified package** — one installable folder that ships 
 
 ```
 plugin.yaml                 # manifest (name, version, description, platforms)
-__init__.py                 # agent half — currently registers nothing (no tools/hooks yet)
-desktop/plugin.js           # desktop half — the canvas office page + sidebar nav
+__init__.py                 # agent half — the read-only office_status tool
+desktop/plugin.js           # desktop half — the canvas office page, sidebar nav,
+                            # status-bar chip, palette command + keybind, settings page
 dashboard/manifest.json     # dashboard backend manifest
 dashboard/plugin_api.py     # FastAPI router -> /api/plugins/office-3d/state
 docs/                       # screenshots
@@ -49,6 +63,7 @@ When the folder lands in a `plugins/` root, the Desktop app copies `desktop/plug
 1. **Desktop half** — `desktop/plugin.js` — a single ESM file the desktop app loads at runtime (canvas 2D isometric scene; no build step).
 2. **Backend half** — `dashboard/plugin_api.py` + `manifest.json` — a FastAPI router mounted at `/api/plugins/office-3d/state` by the dashboard web server. It scans each profile's `gateway_state.json` (process liveness) and `state.db` (session activity + token/cost aggregates).
 3. **Enable flag** — `office-3d` must be listed in `plugins.enabled` in your `config.yaml` before the backend is imported (security gate). `hermes plugins enable office-3d` writes it.
+4. **Agent half** — `__init__.py` registers one read-only tool, `office_status`, which scans the same two sources directly from the gateway process (no HTTP, no credentials).
 
 The plugin is portable: `HERMES_HOME` honours `$HERMES_HOME` (falls back to `~/.hermes`), and profiles are discovered by scanning `~/.hermes/profiles/` — no names are hard-coded.
 

@@ -21,6 +21,13 @@
 - 底部状态徽章：**online / busy / 活跃会话 / tokens / agents / cost**，跨所有 profile 聚合。
 - 后端只读各 profile `state.db` 的聚合列（COUNT/SUM/MAX），**绝不读会话正文**。
 
+## 页面之外
+
+- **状态栏挂件** —— 常驻在状态栏右端的小结（有活在跑时显示 `🏢 2 busy`，否则 `🏢 4 online`）。点击打开办公室，悬停看完整分解。
+- **⌘K 命令面板 + 快捷键** —— "Open Office 3D"，默认 `mod+shift+o`，可在设置里改绑。
+- **`office_status` agent 工具** —— 只读。报告各 profile 的 online/busy/offline 与聚合的会话数/token/成本，让模型无需桌面 app 就能回答"现在谁在干活"。隐私边界与后端一致。
+- **设置 ▸ 插件 ▸ Office 3D** —— 刷新间隔（2s / 5s / 15s / 60s）、隐藏离线 profile、可选的"profile 状态变化时弹通知"。
+
 ## 技术栈
 
 - **@hermes/plugin-sdk** — Hermes 桌面插件 API（单文件 ESM，无需构建）
@@ -35,8 +42,9 @@
 
 ```
 plugin.yaml                 # 清单（name / version / description / platforms）
-__init__.py                 # agent 半边 —— 目前不注册任何东西（暂无 tool/hook）
-desktop/plugin.js           # 桌面端半边 —— canvas 办公室页面 + 侧栏导航
+__init__.py                 # agent 半边 —— 只读的 office_status 工具
+desktop/plugin.js           # 桌面端半边 —— canvas 办公室页面、侧栏导航、
+                            # 状态栏挂件、命令面板命令 + 快捷键、设置页
 dashboard/manifest.json     # dashboard 后端清单
 dashboard/plugin_api.py     # FastAPI 路由 -> /api/plugins/office-3d/state
 docs/                       # 截图
@@ -49,6 +57,7 @@ docs/                       # 截图
 1. **桌面半边** — `desktop/plugin.js` — 桌面 app 运行时加载的单个 ESM 文件（canvas 2D 等距场景，无需编译）。
 2. **后端半边** — `dashboard/plugin_api.py` + `manifest.json` — 一个 FastAPI 路由，由 dashboard web 服务挂载到 `/api/plugins/office-3d/state`。它扫描每个 profile 的 `gateway_state.json`（进程存活）和 `state.db`（会话活动 + token/成本聚合）。
 3. **启用开关** — 后端被 import 前，`office-3d` 必须出现在 `config.yaml` 的 `plugins.enabled` 里（安全门）。用 `hermes plugins enable office-3d` 写入。
+4. **agent 半边** — `__init__.py` 注册一个只读工具 `office_status`，在 gateway 进程里直接扫描同样的两个数据源（不走 HTTP、不需要凭据）。
 
 插件可移植：`HERMES_HOME` 会优先读环境变量 `$HERMES_HOME`（回退 `~/.hermes`），profile 通过扫描 `~/.hermes/profiles/` 动态发现——**不写死任何 profile 名字**。
 

@@ -14,15 +14,32 @@
 import {
   ROUTES_AREA,
   SIDEBAR_NAV_AREA,
+  STATUSBAR_AREAS,
+  PALETTE_AREA,
+  KEYBINDS_AREA,
+  host,
+  atom,
+  useValue,
   useQuery,
   profileColor,
   cn,
   EmptyState,
   ErrorState,
   Skeleton,
+  ListRow,
+  ToggleRow,
+  SegmentedControl,
+  Tip,
 } from '@hermes/plugin-sdk'
 import { jsx, jsxs } from 'react/jsx-runtime'
 import { useEffect, useMemo, useRef } from 'react'
+
+// Route of the office page, shared by the sidebar row, the palette command and
+// the status-bar chip so they can never drift apart.
+const OFFICE_PATH = '/office-3d'
+// One React Query key for every consumer, so the chip and the page share a
+// single poll instead of each starting its own.
+const OFFICE_QUERY_KEY = ['office-3d', 'state']
 
 // ---------------------------------------------------------------------------
 // Isometric projection helpers.
@@ -293,29 +310,77 @@ function drawSphere(c, ox, oy, x, y, z, radius, scale, fill, stroke) {
 
 // ---------------------------------------------------------------------------
 // Scene layout.
+//
+// The desk grid is DERIVED from the number of profiles: a fixed 3-column grid
+// pushed the 7th desk outside the work floor (y=6.9 > the 6.5-deep floor), so
+// the office overflowed as soon as an install had more than six profiles.
+// Everything here is pure — no canvas, no DOM — so it can be unit-tested.
 // ---------------------------------------------------------------------------
-const DESK_COLS = 3
 const DESK_ROW_SPACING = 3.2
 const DESK_COL_SPACING = 3.6
 const WORK_ORIGIN = { x: 0.5, y: 0.5 }
-const LOUNGE_ORIGIN = { x: 0.5, y: 8.5 }
+// Floor margin around the desk grid. 3.3 reproduces the original 6.5-deep work
+// floor for a two-row grid, so a six-profile install looks exactly as before.
+const WORK_PAD = 3.3
+const LOUNGE_DEPTH = 6.0 // lounge zone depth (its furniture is a fixed size)
+const LOUNGE_GAP = 0.5   // gap between the work floor and the lounge floor
+const LOUNGE_W = 11      // minimum scene width, so the lounge ring always fits
+const MAX_COLS = 5       // widest desk grid
+const MIN_SCALE = 10     // smallest scene scale that still fits a huge install
+const MAX_SCALE = 64
 
-function deskSlot(index) {
-  const col = index % DESK_COLS
-  const row = Math.floor(index / DESK_COLS)
+// Near-square desk grid for `count` desks: 6 -> 3x2 (unchanged), 9 -> 3x3,
+// 12 -> 4x3, 25 -> 5x5.
+function deskGrid(count) {
+  const n = Math.max(1, Math.floor(count) || 1)
+  let cols = Math.max(2, Math.min(MAX_COLS, Math.ceil(Math.sqrt(n))))
+  if (cols > n) cols = n
+  return { cols, rows: Math.ceil(n / cols) }
+}
+
+// World-space extents of the whole scene for `count` desks, plus the isometric
+// bounding box used to fit it into the canvas.
+function sceneLayout(count) {
+  const { cols, rows } = deskGrid(count)
+  const workW = (cols - 1) * DESK_COL_SPACING + WORK_PAD
+  const workH = (rows - 1) * DESK_ROW_SPACING + WORK_PAD
+  const worldW = Math.max(LOUNGE_W, workW)
+  const loungeY0 = workH + LOUNGE_GAP
+  const worldH = loungeY0 + LOUNGE_DEPTH
+  // Ground plane projects to (w + h) * ISO_X wide and (w + h) * ISO_Y tall;
+  // add the z extent above it (monitors + name labels sit at z ≈ 2.1-3.0).
+  return {
+    cols,
+    rows,
+    workW,
+    workH,
+    worldW,
+    worldH,
+    loungeY0,
+    projW: (worldW + worldH) * ISO_X,
+    projH: (worldW + worldH) * ISO_Y + 3.0,
+    // Lounge furniture is anchored relative to the work floor, so the zone
+    // follows the grid instead of sitting at a hard-coded y.
+    lounge: { x: WORK_ORIGIN.x, y: loungeY0 + 1.5 },
+  }
+}
+
+function deskSlot(index, cols) {
+  const col = index % cols
+  const row = Math.floor(index / cols)
   return {
     x: WORK_ORIGIN.x + col * DESK_COL_SPACING,
     y: WORK_ORIGIN.y + row * DESK_ROW_SPACING,
   }
 }
 
-function loungeSlot(index, total) {
+function loungeSlot(index, total, lounge) {
   const t = total > 0 ? total : 1
   const angle = (index / t) * Math.PI * 2
   const r = 1.7
   return {
-    x: LOUNGE_ORIGIN.x + 2.0 + Math.cos(angle) * r,
-    y: LOUNGE_ORIGIN.y + 1.6 + Math.sin(angle) * r,
+    x: lounge.x + 2.0 + Math.cos(angle) * r,
+    y: lounge.y + 1.6 + Math.sin(angle) * r,
   }
 }
 
@@ -439,31 +504,27 @@ function drawFrame(canvas, c, entries, tSec, mode) {
   c.fillStyle = bg
   c.fillRect(0, 0, cssW, cssH)
 
-  // Compute scale to fit the whole scene bounds into the canvas.
-  // Scene extents in world XY: roughly x∈[0, 11], y∈[0, 12].
-  const worldW = 11
-  const worldH = 12
-  const projW = (worldW + worldH) * ISO_X
-  const projH = (worldW + worldH) * ISO_Y + 3.0
+  // Size the scene for THIS many desks, then fit it into the canvas.
+  const L = sceneLayout(Array.isArray(entries) ? entries.length : 0)
   const margin = 24
   const scaleFit = Math.min(
-    (cssW - margin * 2) / projW,
-    (sceneH - margin * 2) / projH,
+    (cssW - margin * 2) / L.projW,
+    (sceneH - margin * 2) / L.projH,
   )
-  const scale = Math.max(14, Math.min(64, scaleFit))
+  const scale = Math.max(MIN_SCALE, Math.min(MAX_SCALE, scaleFit))
 
   // Origin: shift so leftmost projected x sits at the margin.
-  const leftMost = (0 - worldH) * ISO_X * scale
+  const leftMost = (0 - L.worldH) * ISO_X * scale
   const topMost = -3.0 * scale
-  const ox = margin - leftMost + Math.max(0, (cssW - margin * 2 - projW * scale) / 2)
+  const ox = margin - leftMost + Math.max(0, (cssW - margin * 2 - L.projW * scale) / 2)
   const oy = margin - topMost
 
   // Zone floors
-  drawFloor(c, ox, oy, 0, 0, worldW, 6.5, scale, {
+  drawFloor(c, ox, oy, 0, 0, L.worldW, L.workH, scale, {
     fill: P.floorWorkFill,
     stroke,
   })
-  drawFloor(c, ox, oy, 0, 7.0, worldW, 6.0, scale, {
+  drawFloor(c, ox, oy, 0, L.loungeY0, L.worldW, LOUNGE_DEPTH, scale, {
     fill: P.floorLoungeFill,
     stroke,
   })
@@ -473,20 +534,20 @@ function drawFrame(canvas, c, entries, tSec, mode) {
   c.fillStyle = textTer
   c.textAlign = 'right'
   {
-    const [lx, ly] = iso(worldW, 6.5, 0, scale)
+    const [lx, ly] = iso(L.worldW, L.workH, 0, scale)
     c.fillText('WORK', ox + lx + 24, oy + ly - 22)
   }
   {
-    const [lx, ly] = iso(worldW, 13.0, 0, scale)
+    const [lx, ly] = iso(L.worldW, L.loungeY0 + LOUNGE_DEPTH, 0, scale)
     c.fillText('LOUNGE', ox + lx + 24, oy + ly - 22)
   }
   c.textAlign = 'start'
 
   // Lounge furniture (drawn behind lounge avatars because sofa is at higher y).
-  drawLounge(c, ox, oy, scale, stroke, textQuat, accent, tSec, P)
+  drawLounge(c, ox, oy, scale, stroke, textQuat, accent, tSec, P, L.lounge)
 
   // Desks & at-desk avatars — painter's order, back to front.
-  const desks = entries.map((entry, i) => ({ entry, i, slot: deskSlot(i) }))
+  const desks = entries.map((entry, i) => ({ entry, i, slot: deskSlot(i, L.cols) }))
   desks.sort((a, b) => (a.slot.x + a.slot.y) - (b.slot.x + b.slot.y))
   for (const { entry, i, slot } of desks) {
     drawDeskAndAvatar(c, ox, oy, scale, slot, entry, i, tSec,
@@ -500,7 +561,7 @@ function drawFrame(canvas, c, entries, tSec, mode) {
     .map((entry, i) => ({ entry, i }))
     .filter(({ entry }) => entry.online && !entry.busy)
   lounged.forEach(({ entry, i }, idx) => {
-    const slot = loungeSlot(idx, lounged.length)
+    const slot = loungeSlot(idx, lounged.length, L.lounge)
     drawLoungeAvatar(c, ox, oy, scale, slot, entry, i, tSec, idx,
       { stroke, textSec, textTer, accent, P })
   })
@@ -633,7 +694,7 @@ function drawFloor(c, ox, oy, x, y, w, d, scale, style) {
   c.stroke()
 }
 
-function drawLounge(c, ox, oy, scale, stroke, tint, accent, tSec, palette) {
+function drawLounge(c, ox, oy, scale, stroke, tint, accent, tSec, palette, lounge) {
   const P = palette || {}
   const isLight = P.mode === 'light'
   // Sofa fabric base: a muted blue-grey in dark, a soft light fabric in light.
@@ -641,10 +702,10 @@ function drawLounge(c, ox, oy, scale, stroke, tint, accent, tSec, palette) {
   const sofaBack = isLight ? '#c4ccd8' : shade(accent, -0.35)
   // Coffee-table wood: deep walnut in dark, light oak in light.
   const wood = isLight ? '#c9a876' : '#6b4b2a'
-  // Sofa (drawn first, at back). Original position; the lounge floor is sized
-  // to contain its back edge (see drawFloor depth for the lounge).
-  const sx = LOUNGE_ORIGIN.x + 0.6
-  const sy = LOUNGE_ORIGIN.y + 3.2
+  // Sofa (drawn first, at back). Anchored to the lounge origin the scene
+  // layout computed, so the zone follows the desk grid.
+  const sx = lounge.x + 0.6
+  const sy = lounge.y + 3.2
   drawIsoBox(c, ox, oy, sx, sy, 0, 3.2, 1.0, 0.5, scale, {
     top: shade(sofa, 0.06),
     left: shade(sofa, -0.14),
@@ -659,8 +720,8 @@ function drawLounge(c, ox, oy, scale, stroke, tint, accent, tSec, palette) {
   })
 
   // Coffee table
-  const tx = LOUNGE_ORIGIN.x + 1.4
-  const ty = LOUNGE_ORIGIN.y + 1.0
+  const tx = lounge.x + 1.4
+  const ty = lounge.y + 1.0
   drawIsoBox(c, ox, oy, tx, ty, 0, 1.4, 1.0, 0.35, scale, {
     top: shade(wood, 0.15),
     left: shade(wood, -0.15),
@@ -1066,21 +1127,158 @@ function OfficeLegend({ entries }) {
   })
 }
 
-function OfficeStats({ entries }) {
-  const stats = useMemo(() => {
-    const list = Array.isArray(entries) ? entries : []
-    let online = 0, busy = 0, sessions = 0, tokens = 0, cost = 0, agents = 0
-    for (const e of list) {
-      if (!e || typeof e !== 'object') continue
-      if (e.online) online++
-      if (e.busy) busy++
-      sessions += Number(e.active_sessions) || 0
-      tokens += Number(e.tokens_total) || 0
-      cost += Number(e.cost_total) || 0
-      agents += Number(e.active_agents) || 0
+// ---------------------------------------------------------------------------
+// Preferences (desktop-half-local, persisted with ctx.storage).
+// ---------------------------------------------------------------------------
+const PREFS_KEY = 'prefs'
+const PREFS_DEFAULTS = {
+  pollSeconds: 5,
+  hideOffline: false,
+  notifyOnChange: false,
+}
+const POLL_CHOICES = ['2', '5', '15', '60']
+
+function readPrefs(ctx) {
+  let stored = {}
+  try {
+    stored = ctx.storage.get(PREFS_KEY, {}) || {}
+  } catch (err) {
+    stored = {}
+  }
+  const merged = { ...PREFS_DEFAULTS, ...stored }
+  // Tolerate a hand-edited or older stored value.
+  const secs = Number(merged.pollSeconds)
+  merged.pollSeconds =
+    Number.isFinite(secs) && secs >= 2 && secs <= 300
+      ? Math.round(secs)
+      : PREFS_DEFAULTS.pollSeconds
+  merged.hideOffline = !!merged.hideOffline
+  merged.notifyOnChange = !!merged.notifyOnChange
+  return merged
+}
+
+// Aggregate the per-profile entries into the numbers the chips show.
+function summarize(entries) {
+  const list = Array.isArray(entries) ? entries : []
+  let online = 0, busy = 0, sessions = 0, tokens = 0, cost = 0, agents = 0
+  for (const e of list) {
+    if (!e || typeof e !== 'object') continue
+    if (e.online) online++
+    if (e.busy) busy++
+    sessions += Number(e.active_sessions) || 0
+    tokens += Number(e.tokens_total) || 0
+    cost += Number(e.cost_total) || 0
+    agents += Number(e.active_agents) || 0
+  }
+  return { online, busy, sessions, tokens, cost, agents }
+}
+
+// Settings ▸ Plugins ▸ Office 3D. Built from the app's own settings rows so it
+// looks like core Settings.
+function OfficeSettingsPage({ prefs, update }) {
+  const { pollSeconds, hideOffline, notifyOnChange } = useValue(prefs)
+  return jsxs('div', {
+    className: 'flex flex-col',
+    children: [
+      jsx(ListRow, {
+        title: 'Refresh interval',
+        description:
+          'How often the office asks the backend for profile state. The canvas animates continuously; this only controls the data poll.',
+        action: jsx(SegmentedControl, {
+          value: String(pollSeconds),
+          onChange: (value) => update({ pollSeconds: Number(value) }),
+          options: POLL_CHOICES.map((s) => ({ id: s, label: s + 's' })),
+        }),
+      }),
+      jsx(ToggleRow, {
+        checked: hideOffline,
+        label: 'Hide offline profiles',
+        description:
+          'Draw only profiles that are online, so the office shows what is actually running.',
+        onChange: (on) => update({ hideOffline: on }),
+      }),
+      jsx(ToggleRow, {
+        checked: notifyOnChange,
+        label: 'Notify when a profile changes state',
+        description:
+          'A desktop toast when a profile goes busy, idle or offline. The status-bar chip is the poller, so keep it enabled for this to fire.',
+        onChange: (on) => update({ notifyOnChange: on }),
+      }),
+    ],
+  })
+}
+
+// Status-bar chip: a one-glance summary that is always mounted, so it is also
+// where the optional state-change notifications come from.
+function OfficeStatusChip({ ctx, prefs }) {
+  const { pollSeconds, notifyOnChange } = useValue(prefs)
+  const query = useQuery({
+    queryKey: OFFICE_QUERY_KEY,
+    queryFn: () => ctx.rest('/state'),
+    refetchInterval: () =>
+      typeof document !== 'undefined' && document.hidden
+        ? false
+        : pollSeconds * 1000,
+    refetchOnWindowFocus: true,
+  })
+  const entries = Array.isArray(query.data) ? query.data : []
+  const stats = useMemo(() => summarize(entries), [entries])
+
+  // Opt-in: toast when a profile changes state. Seeded from the first payload
+  // so enabling the setting (or opening the app) never fires a burst.
+  const seenRef = useRef(null)
+  useEffect(() => {
+    if (!notifyOnChange) return
+    const next = new Map()
+    for (const e of entries) {
+      if (e && e.profile) {
+        next.set(e.profile, e.busy ? 'busy' : e.online ? 'idle' : 'offline')
+      }
     }
-    return { online, busy, sessions, tokens, cost, agents }
-  }, [entries])
+    const prev = seenRef.current
+    seenRef.current = next
+    if (!prev || next.size === 0) return
+    for (const [profile, state] of next) {
+      const before = prev.get(profile)
+      if (before && before !== state) {
+        host.notify({
+          kind: 'info',
+          title: 'Office 3D',
+          message: profile + ' is now ' + state,
+          action: { label: 'Open office', onClick: () => host.navigate(OFFICE_PATH) },
+        })
+      }
+    }
+  }, [entries, notifyOnChange])
+
+  const hasData = Array.isArray(query.data)
+  const label = !hasData
+    ? '—'
+    : stats.busy > 0
+      ? stats.busy + ' busy'
+      : stats.online + ' online'
+
+  return jsx(Tip, {
+    label:
+      'Office 3D — ' + stats.online + ' online · ' + stats.busy + ' busy · ' +
+      stats.sessions + ' active session' + (stats.sessions === 1 ? '' : 's'),
+    children: jsxs('button', {
+      type: 'button',
+      onClick: () => host.navigate(OFFICE_PATH),
+      className: cn(
+        'inline-flex h-full items-center gap-1 px-1.5 text-[0.6875rem]',
+        'text-(--ui-text-tertiary) hover:text-(--ui-text-secondary)',
+      ),
+      children: [
+        jsx('span', { 'aria-hidden': true, children: '🏢' }),
+        jsx('span', { className: 'tabular-nums', children: label }),
+      ],
+    }),
+  })
+}
+
+function OfficeStats({ entries }) {
+  const stats = useMemo(() => summarize(entries), [entries])
 
   const chip = (value, label, valColor, key) => jsxs('div', {
     className: 'flex items-baseline gap-1.5 px-2.5 py-1 rounded-md border border-[var(--ui-stroke-secondary)] bg-[var(--ui-bg)]',
@@ -1114,15 +1312,19 @@ function OfficeStats({ entries }) {
   })
 }
 
-function OfficePage({ ctx }) {
+function OfficePage({ ctx, prefs }) {
+  const { pollSeconds, hideOffline } = useValue(prefs)
   // Pause polling while the document is hidden (other tab / minimized).
   // Canvas rAF already stops on visibilitychange; the query must too,
-  // otherwise we keep opening backend work every 5s for a page nobody sees.
+  // otherwise we keep opening backend work on a page nobody sees.
+  // The status-bar chip polls the same query key, so this never doubles up.
   const query = useQuery({
-    queryKey: ['office-3d', 'state'],
+    queryKey: OFFICE_QUERY_KEY,
     queryFn: () => ctx.rest('/state'),
     refetchInterval: () =>
-      typeof document !== 'undefined' && document.hidden ? false : 5000,
+      typeof document !== 'undefined' && document.hidden
+        ? false
+        : pollSeconds * 1000,
     refetchOnWindowFocus: true,
   })
 
@@ -1138,11 +1340,19 @@ function OfficePage({ ctx }) {
       description: String(query.error && query.error.message ? query.error.message : query.error || 'unknown error'),
     })
   } else {
-    const entries = Array.isArray(query.data) ? query.data : []
-    if (entries.length === 0) {
+    const all = Array.isArray(query.data) ? query.data : []
+    const entries = hideOffline
+      ? all.filter((e) => e && e.online)
+      : all
+    if (all.length === 0) {
       body = jsx(EmptyState, {
         title: 'No profiles found',
         description: 'gateway_state.json was not readable for any profile.',
+      })
+    } else if (entries.length === 0) {
+      body = jsx(EmptyState, {
+        title: 'Every profile is offline',
+        description: 'Nothing is running right now. Turn off "Hide offline profiles" in Settings to see the empty desks.',
       })
     } else {
       body = jsxs('div', {
@@ -1171,7 +1381,7 @@ function OfficePage({ ctx }) {
           }),
           jsx('span', {
             className: 'text-xs text-[var(--ui-text-tertiary)]',
-            children: 'Isometric 2D · refreshes every 5s',
+            children: 'Isometric 2D · refreshes every ' + pollSeconds + 's',
           }),
         ],
       }),
@@ -1189,16 +1399,70 @@ export default {
   defaultEnabled: true,
   register(c) {
     const ctx = c
+    // Desktop-half-local preferences, shared by every surface through one atom
+    // and persisted with ctx.storage.
+    const prefs = atom(readPrefs(ctx))
+    const update = (patch) => {
+      const next = { ...prefs.get(), ...patch }
+      prefs.set(next)
+      try {
+        ctx.storage.set(PREFS_KEY, next)
+      } catch (err) {
+        // A storage failure must not break the settings page.
+      }
+    }
+    const openOffice = () => host.navigate(OFFICE_PATH)
+
     c.register({
       id: 'page',
       area: ROUTES_AREA,
-      data: { path: '/office-3d' },
-      render: () => jsx(OfficePage, { ctx }),
+      data: { path: OFFICE_PATH },
+      render: () => jsx(OfficePage, { ctx, prefs }),
     })
     c.register({
       id: 'nav',
       area: SIDEBAR_NAV_AREA,
-      data: { path: '/office-3d', label: 'Office', codicon: 'home' },
+      data: { path: OFFICE_PATH, label: 'Office', codicon: 'home' },
+    })
+    // Status-bar chip: the always-mounted summary, and the poller that feeds
+    // the optional state-change notifications.
+    c.register({
+      id: 'status',
+      area: STATUSBAR_AREAS.right,
+      order: 120,
+      render: () => jsx(OfficeStatusChip, { ctx, prefs }),
+    })
+    c.register({
+      id: 'palette-open',
+      area: PALETTE_AREA,
+      data: {
+        id: 'office-3d.open.row',
+        label: 'Open Office 3D',
+        keywords: ['office', 'profiles', 'agents', 'busy', 'desk'],
+        // Render the live keybind combo as the row's hotkey hint.
+        action: 'office-3d.open',
+        run: openOffice,
+      },
+    })
+    c.register({
+      id: 'keybind-open',
+      area: KEYBINDS_AREA,
+      data: {
+        id: 'office-3d.open',
+        label: 'Open Office 3D',
+        category: 'view',
+        defaults: ['mod+shift+o'],
+        run: openOffice,
+      },
+    })
+    // Settings ▸ Plugins ▸ Office 3D. Feature-detected so the plugin still
+    // loads on hosts that predate ctx.registerSettingsPage.
+    ctx.registerSettingsPage?.({
+      id: 'settings',
+      title: 'Office 3D',
+      icon: 'organization',
+      order: 0,
+      render: () => jsx(OfficeSettingsPage, { prefs, update }),
     })
   },
 }
