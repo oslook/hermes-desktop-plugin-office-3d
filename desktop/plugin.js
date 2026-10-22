@@ -32,7 +32,7 @@ import {
   Tip,
 } from '@hermes/plugin-sdk'
 import { jsx, jsxs } from 'react/jsx-runtime'
-import { useEffect, useMemo, useRef } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 
 // Route of the office page, shared by the sidebar row, the palette command and
 // the status-bar chip so they can never drift apart.
@@ -385,12 +385,64 @@ function loungeSlot(index, total, lounge) {
 }
 
 // ---------------------------------------------------------------------------
+// Hit testing.
+//
+// A desk is clickable, so the click handler needs the inverse of the frame
+// projection. drawFrame hands back the transform it drew with (ox/oy/scale +
+// the layout), and these helpers turn a CSS-pixel point back into a desk index.
+// Pure functions — no canvas, no DOM — so they are unit-testable.
+// ---------------------------------------------------------------------------
+const DESK_W = 2.2        // desk footprint (x)
+const DESK_D = 1.1        // desk footprint (y)
+const DESK_H = 1.6        // desk + monitor + name label, for the click target
+
+// Screen-space (CSS px) bounding box of one desk's clickable volume.
+function deskHitBox(slot, ox, oy, scale) {
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity
+  for (const dx of [0, DESK_W]) {
+    for (const dy of [0, DESK_D]) {
+      for (const dz of [0, DESK_H]) {
+        const [px, py] = iso(slot.x + dx, slot.y + dy, dz, scale)
+        const sx = ox + px
+        const sy = oy + py
+        if (sx < x0) x0 = sx
+        if (sx > x1) x1 = sx
+        if (sy < y0) y0 = sy
+        if (sy > y1) y1 = sy
+      }
+    }
+  }
+  return { x0, y0, x1, y1 }
+}
+
+// Which desk is under (px, py) in CSS px? Boxes overlap in an isometric scene,
+// so among the hits pick the FRONT-most one (largest slot.x + slot.y, the order
+// drawFrame paints in), which is the desk the user actually sees on top.
+function hitTestDesks(entries, frame, px, py) {
+  if (!frame || !Array.isArray(entries)) return -1
+  const { ox, oy, scale, layout } = frame
+  let bestIndex = -1
+  let bestDepth = -Infinity
+  for (let i = 0; i < entries.length; i++) {
+    const slot = deskSlot(i, layout.cols)
+    const box = deskHitBox(slot, ox, oy, scale)
+    if (px < box.x0 || px > box.x1 || py < box.y0 || py > box.y1) continue
+    const depth = slot.x + slot.y
+    if (depth > bestDepth) {
+      bestDepth = depth
+      bestIndex = i
+    }
+  }
+  return bestIndex
+}
+
+// ---------------------------------------------------------------------------
 // Palette that FOLLOWS the Hermes global theme. buildPalette reads the app's
 // --ui-bg each frame and picks a light or dark scene palette from its
 // luminance, so toggling Hermes's theme flips the office automatically.
 // getComputedStyle also supplies the accent color.
 // ---------------------------------------------------------------------------
-function buildPalette(canvas, mode) {
+function buildPalette(canvas) {
   const cs = getComputedStyle(canvas)
   const accentDark = (cs.getPropertyValue('--ui-accent') || '#4c9aff').trim() || '#4c9aff'
   const accentLight = (cs.getPropertyValue('--ui-accent') || '#2563eb').trim() || '#2563eb'
@@ -476,11 +528,42 @@ function buildPalette(canvas, mode) {
   }
 }
 
+// Accent outline on the floor under the SELECTED desk, so a click has visible
+// feedback. Drawn before the desks so it reads as a mat, not a box.
+function drawSelection(c, ox, oy, scale, slot, accent) {
+  const pad = 0.28
+  const corners = [
+    [slot.x - pad, slot.y - pad],
+    [slot.x + DESK_W + pad, slot.y - pad],
+    [slot.x + DESK_W + pad, slot.y + DESK_D + pad],
+    [slot.x - pad, slot.y + DESK_D + pad],
+  ]
+  c.save()
+  c.beginPath()
+  corners.forEach(([x, y], i) => {
+    const [px, py] = iso(x, y, 0.02, scale)
+    if (i === 0) c.moveTo(ox + px, oy + py)
+    else c.lineTo(ox + px, oy + py)
+  })
+  c.closePath()
+  // Never parse the accent (it can be an oklch()/color-mix() expression the
+  // canvas will not accept) — modulate alpha on the color itself.
+  c.globalAlpha = 0.16
+  c.fillStyle = accent
+  c.fill()
+  c.globalAlpha = 0.9
+  c.strokeStyle = accent
+  c.lineWidth = 2.5
+  c.stroke()
+  c.restore()
+}
+
 // ---------------------------------------------------------------------------
 // Frame draw.
 // ---------------------------------------------------------------------------
-function drawFrame(canvas, c, entries, tSec, mode) {
-  const P = buildPalette(canvas, mode)
+function drawFrame(canvas, c, entries, tSec, selectedIndex) {
+  if (!Array.isArray(entries)) entries = []
+  const P = buildPalette(canvas)
   const bg = P.bg
   const stroke = P.stroke
   const textSec = P.textSec
@@ -543,6 +626,15 @@ function drawFrame(canvas, c, entries, tSec, mode) {
   }
   c.textAlign = 'start'
 
+  // Selection mat under the clicked desk (before the desks, so it is not on top).
+  if (
+    typeof selectedIndex === 'number' &&
+    selectedIndex >= 0 &&
+    selectedIndex < entries.length
+  ) {
+    drawSelection(c, ox, oy, scale, deskSlot(selectedIndex, L.cols), accent)
+  }
+
   // Lounge furniture (drawn behind lounge avatars because sofa is at higher y).
   drawLounge(c, ox, oy, scale, stroke, textQuat, accent, tSec, P, L.lounge)
 
@@ -570,6 +662,10 @@ function drawFrame(canvas, c, entries, tSec, mode) {
   // (Aggregate stats now render as DOM chips below the canvas — see
   // OfficeStats — not painted here, so the canvas stays a clean scene.)
   // -------------------------------------------------------------------------
+
+  // Hand the transform back so a click can be hit-tested against exactly the
+  // projection these pixels were drawn with.
+  return { ox, oy, scale, layout: L }
 }
 
 // Draws a slim status strip at the very bottom of the canvas showing
@@ -1022,16 +1118,29 @@ function drawLoungeAvatar(c, ox, oy, scale, slot, entry, index, tSec, idx, palet
 // ---------------------------------------------------------------------------
 // React components.
 // ---------------------------------------------------------------------------
-function OfficeCanvas({ entries }) {
+function OfficeCanvas({ entries, selectedIndex, onPick }) {
   const containerRef = useRef(null)
   const canvasRef = useRef(null)
   const rafRef = useRef(0)
   const startRef = useRef(0)
   const entriesRef = useRef(entries)
+  // Transform of the last drawn frame, so a click can be hit-tested against the
+  // exact projection the pixels came from.
+  const frameRef = useRef(null)
+  const selectedRef = useRef(selectedIndex)
+  const onPickRef = useRef(onPick)
 
   useEffect(() => {
     entriesRef.current = entries
   }, [entries])
+
+  useEffect(() => {
+    selectedRef.current = selectedIndex
+  }, [selectedIndex])
+
+  useEffect(() => {
+    onPickRef.current = onPick
+  }, [onPick])
 
   useEffect(() => {
     const container = containerRef.current
@@ -1062,7 +1171,9 @@ function OfficeCanvas({ entries }) {
       if (!document.hidden) {
         const tSec = (now - startRef.current) / 1000
         try {
-          drawFrame(canvas, c2, entriesRef.current || [], tSec)
+          frameRef.current = drawFrame(
+            canvas, c2, entriesRef.current || [], tSec, selectedRef.current,
+          )
         } catch (err) {
           // Never let a draw error kill the loop.
           // eslint-disable-next-line no-console
@@ -1088,12 +1199,33 @@ function OfficeCanvas({ entries }) {
     }
   }, [])
 
+  // Click a desk -> report the profile (or null for a miss). The canvas draws in
+  // logical CSS px (drawFrame scales the context by dpr itself), so clientX/Y
+  // minus the element rect is already in the frame's coordinate space.
+  const handleClick = (event) => {
+    const pick = onPickRef.current
+    if (!pick) return
+    const frame = frameRef.current
+    const list = entriesRef.current || []
+    if (!frame) return
+    const rect = event.currentTarget.getBoundingClientRect()
+    const index = hitTestDesks(
+      list, frame, event.clientX - rect.left, event.clientY - rect.top,
+    )
+    pick(index >= 0 ? list[index] : null)
+  }
+
   return jsx('div', {
     ref: containerRef,
     className: cn('relative w-full h-full min-h-[380px]'),
     children: jsx('canvas', {
       ref: canvasRef,
-      className: 'block w-full h-full rounded-md border border-[var(--ui-stroke-secondary)]',
+      onClick: handleClick,
+      title: 'Click a desk to inspect that profile',
+      className: cn(
+        'block w-full h-full rounded-md border border-[var(--ui-stroke-secondary)]',
+        onPick ? 'cursor-pointer' : '',
+      ),
     }),
   })
 }
@@ -1312,8 +1444,242 @@ function OfficeStats({ entries }) {
   })
 }
 
+// ---------------------------------------------------------------------------
+// Opening a profile in the main window.
+// ---------------------------------------------------------------------------
+
+// Always-available door: a fresh chat draft in that profile (the app switches
+// the active backend for us).
+function openProfileChat(profile) {
+  try {
+    host.newChat(profile)
+  } catch (err) {
+    host.notifyError(err, 'Could not open ' + profile + "'s chat")
+  }
+}
+
+// Resolve a profile's most recent session through the app's OWN RPC, so we can
+// open it core-style. Only session METADATA is read here (id/title/timestamps) —
+// never message content. Returns null when nothing resolves, and the caller
+// falls back to a fresh chat. Any RPC failure (older gateway, unknown profile,
+// a rejected param) degrades to null rather than throwing.
+async function resolveLatestSession(profile) {
+  try {
+    const res = await host.request('session.list', {
+      profile,
+      limit: 1,
+      scope: 'stored',
+    })
+    const rows = res && Array.isArray(res.sessions) ? res.sessions : []
+    const first = rows[0]
+    const id = first && (first.session_id || first.id)
+    return id ? String(id) : null
+  } catch (err) {
+    return null
+  }
+}
+
+function openStoredSession(profile, sessionId) {
+  Promise.resolve(host.openSession(sessionId, { profile })).catch((err) =>
+    host.notifyError(err, 'Could not open that session'),
+  )
+}
+
+// One label/value row in the detail panel.
+function OfficeMetric({ label, value, tone }) {
+  return jsxs('div', {
+    className: 'flex items-baseline justify-between gap-3',
+    children: [
+      jsx('span', {
+        className: 'text-xs text-[var(--ui-text-tertiary)]',
+        children: label,
+      }),
+      jsx('span', {
+        className: 'text-sm font-semibold tabular-nums text-[var(--ui-text-secondary)]',
+        style: tone ? { color: tone } : undefined,
+        children: value,
+      }),
+    ],
+  })
+}
+
+function OfficeDetailPanel({ entry, onClose }) {
+  const pcolor = profileColor(entry.profile) || '#888'
+  const state = entry.busy ? 'busy' : entry.online ? 'idle' : 'offline'
+  const [sessionId, setSessionId] = useState(null)
+
+  // Resolve the profile's newest session lazily, so "Open latest session" only
+  // shows up when there is one to open.
+  useEffect(() => {
+    let cancelled = false
+    setSessionId(null)
+    resolveLatestSession(entry.profile).then((id) => {
+      if (!cancelled) setSessionId(id)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [entry.profile])
+
+  const idle =
+    entry.online && !entry.busy && typeof entry.idle_since === 'number'
+      ? formatIdle(Date.now() - entry.idle_since * 1000)
+      : null
+
+  const button = (label, onClick, primary) =>
+    jsx('button', {
+      type: 'button',
+      onClick,
+      className: cn(
+        'px-2.5 py-1 rounded-md text-xs font-medium border',
+        primary
+          ? 'border-[var(--ui-accent)] text-[var(--ui-accent)] hover:bg-[var(--ui-accent)] hover:text-[var(--ui-bg)]'
+          : 'border-[var(--ui-stroke-secondary)] text-[var(--ui-text-secondary)] hover:text-[var(--ui-text)]',
+      ),
+      children: label,
+    })
+
+  return jsxs('div', {
+    className: 'flex flex-col gap-2.5 p-3 rounded-md border border-[var(--ui-stroke-secondary)] bg-[var(--ui-bg)]',
+    children: [
+      jsxs('div', {
+        className: 'flex items-center gap-2',
+        children: [
+          jsx('span', {
+            className: 'inline-block h-2.5 w-2.5 rounded-full shrink-0',
+            style: { backgroundColor: pcolor },
+          }),
+          jsx('span', {
+            className: 'text-sm font-semibold text-[var(--ui-text-secondary)] truncate',
+            children: entry.profile,
+          }),
+          jsx('span', {
+            className: 'text-xs text-[var(--ui-text-tertiary)]',
+            children: idle ? '· ' + state + ' · ' + idle : '· ' + state,
+          }),
+          jsx('span', { className: 'flex-1' }),
+          jsx('button', {
+            type: 'button',
+            onClick: onClose,
+            title: 'Close',
+            'aria-label': 'Close profile details',
+            className: 'text-xs text-[var(--ui-text-tertiary)] hover:text-[var(--ui-text-secondary)]',
+            children: '✕',
+          }),
+        ],
+      }),
+      jsx(OfficeMetric, { label: 'active sessions', value: String(entry.active_sessions | 0) }),
+      jsx(OfficeMetric, { label: 'open sessions', value: String(entry.open_sessions | 0) }),
+      jsx(OfficeMetric, { label: 'agents', value: String(entry.active_agents | 0) }),
+      jsx(OfficeMetric, { label: 'tokens', value: formatCompact(Number(entry.tokens_total) || 0) }),
+      jsx(OfficeMetric, {
+        label: 'cost',
+        value: '$' + (Number(entry.cost_total) || 0).toFixed(2),
+        tone: Number(entry.cost_total) > 0 ? '#ffd479' : undefined,
+      }),
+      jsxs('div', {
+        className: 'flex flex-wrap gap-2 pt-0.5',
+        children: [
+          button('Open chat', () => openProfileChat(entry.profile), true),
+          sessionId
+            ? button('Open latest session', () => openStoredSession(entry.profile, sessionId))
+            : null,
+        ],
+      }),
+      jsx('div', {
+        className: 'text-[10px] leading-snug text-[var(--ui-text-tertiary)]',
+        children:
+          'Totals are aggregate columns only (COUNT/SUM/MAX) from this profile’s state.db, read read-only.',
+      }),
+    ],
+  })
+}
+
+function OfficeLeaderboard({ entries, selectedProfile, onSelect }) {
+  const [metric, setMetric] = useState('tokens')
+  const rows = useMemo(() => {
+    const list = (Array.isArray(entries) ? entries : []).slice()
+    list.sort((a, b) => leaderValue(b, metric) - leaderValue(a, metric))
+    return list
+  }, [entries, metric])
+
+  const body = rows.map((entry, i) =>
+    jsxs('button', {
+      type: 'button',
+      onClick: () => onSelect(entry),
+      className: cn(
+        'flex w-full items-center gap-2 px-2 py-1 rounded-md text-left',
+        entry.profile === selectedProfile
+          ? 'bg-[var(--ui-accent)]/15'
+          : 'hover:bg-[var(--ui-bg)]',
+      ),
+      children: [
+        jsx('span', {
+          className: 'w-4 text-right text-[10px] tabular-nums text-[var(--ui-text-tertiary)]',
+          children: String(i + 1),
+        }),
+        jsx('span', {
+          className: 'inline-block h-2 w-2 rounded-full shrink-0',
+          style: { backgroundColor: profileColor(entry.profile) || '#888' },
+        }),
+        jsx('span', {
+          className: 'flex-1 truncate text-xs text-[var(--ui-text-secondary)]',
+          children: entry.profile,
+        }),
+        jsx('span', {
+          className: 'text-xs font-semibold tabular-nums text-[var(--ui-text-secondary)]',
+          children: metric === 'tokens'
+            ? formatCompact(Number(entry.tokens_total) || 0)
+            : '$' + (Number(entry.cost_total) || 0).toFixed(2),
+        }),
+      ],
+    }, entry.profile))
+
+  return jsxs('div', {
+    className: 'flex flex-col gap-2 p-3 rounded-md border border-[var(--ui-stroke-secondary)] bg-[var(--ui-bg)]',
+    children: [
+      jsxs('div', {
+        className: 'flex items-center justify-between gap-2',
+        children: [
+          jsx('span', {
+            className: 'text-xs font-semibold text-[var(--ui-text-secondary)]',
+            children: 'Leaderboard',
+          }),
+          jsx(SegmentedControl, {
+            value: metric,
+            onChange: (value) => setMetric(value === 'cost' ? 'cost' : 'tokens'),
+            options: [
+              { id: 'tokens', label: 'tokens' },
+              { id: 'cost', label: 'cost' },
+            ],
+          }),
+        ],
+      }),
+      body.length
+        ? jsx('div', { className: 'flex flex-col gap-0.5', children: body })
+        : jsx('div', {
+            className: 'text-xs text-[var(--ui-text-tertiary)]',
+            children: 'No profiles to rank yet.',
+          }),
+      jsx('div', {
+        className: 'text-[10px] leading-snug text-[var(--ui-text-tertiary)]',
+        children: 'Click a row to inspect that profile.',
+      }),
+    ],
+  })
+}
+
+// Which number the leaderboard ranks on.
+function leaderValue(entry, metric) {
+  if (!entry || typeof entry !== 'object') return 0
+  return metric === 'cost'
+    ? Number(entry.cost_total) || 0
+    : Number(entry.tokens_total) || 0
+}
+
 function OfficePage({ ctx, prefs }) {
   const { pollSeconds, hideOffline } = useValue(prefs)
+  const [selectedProfile, setSelectedProfile] = useState(null)
   // Pause polling while the document is hidden (other tab / minimized).
   // Canvas rAF already stops on visibilitychange; the query must too,
   // otherwise we keep opening backend work on a page nobody sees.
@@ -1328,6 +1694,10 @@ function OfficePage({ ctx, prefs }) {
     refetchOnWindowFocus: true,
   })
 
+  // Selecting a desk or a leaderboard row. Held by profile NAME, not index, so
+  // it survives a re-sort or a filtered-out row.
+  const pick = (entry) => setSelectedProfile(entry && entry.profile ? entry.profile : null)
+
   let body
   if (query.isLoading) {
     body = jsx('div', {
@@ -1341,9 +1711,12 @@ function OfficePage({ ctx, prefs }) {
     })
   } else {
     const all = Array.isArray(query.data) ? query.data : []
-    const entries = hideOffline
-      ? all.filter((e) => e && e.online)
-      : all
+    const entries = hideOffline ? all.filter((e) => e && e.online) : all
+    const selectedEntry = selectedProfile
+      ? entries.find((e) => e && e.profile === selectedProfile) || null
+      : null
+    const selectedIndex = selectedEntry ? entries.indexOf(selectedEntry) : -1
+
     if (all.length === 0) {
       body = jsx(EmptyState, {
         title: 'No profiles found',
@@ -1358,9 +1731,30 @@ function OfficePage({ ctx, prefs }) {
       body = jsxs('div', {
         className: 'flex flex-col gap-3 w-full h-full',
         children: [
-          jsx('div', {
-            className: 'flex-1 min-h-[420px]',
-            children: jsx(OfficeCanvas, { entries }),
+          jsxs('div', {
+            className: 'flex flex-col lg:flex-row gap-3 flex-1 min-h-[420px]',
+            children: [
+              jsx('div', {
+                className: 'flex-1 min-h-[380px]',
+                children: jsx(OfficeCanvas, { entries, selectedIndex, onPick: pick }),
+              }),
+              jsxs('div', {
+                className: 'w-full lg:w-[300px] shrink-0 flex flex-col gap-2',
+                children: [
+                  selectedEntry
+                    ? jsx(OfficeDetailPanel, {
+                        entry: selectedEntry,
+                        onClose: () => setSelectedProfile(null),
+                      })
+                    : null,
+                  jsx(OfficeLeaderboard, {
+                    entries,
+                    selectedProfile,
+                    onSelect: pick,
+                  }),
+                ],
+              }),
+            ],
           }),
           jsx(OfficeStats, { entries }),
           jsx(OfficeLegend, { entries }),
@@ -1381,7 +1775,9 @@ function OfficePage({ ctx, prefs }) {
           }),
           jsx('span', {
             className: 'text-xs text-[var(--ui-text-tertiary)]',
-            children: 'Isometric 2D · refreshes every ' + pollSeconds + 's',
+            children:
+              'Isometric 2D · click a desk to inspect · refreshes every ' +
+              pollSeconds + 's',
           }),
         ],
       }),

@@ -6,6 +6,8 @@ English | [中文](./README.zh-CN.md)
 
 ## Screenshot
 
+![office-3d banner](./docs/banner.png)
+
 ![office-3d screenshot](./docs/screenshot.jpeg)
 ![office-3d screenshot](./docs/screenshot-2.jpeg)
 
@@ -23,6 +25,11 @@ English | [中文](./README.zh-CN.md)
 
 ## Beyond the page
 
+- **Click a desk** (or a leaderboard row) to inspect that profile: a detail panel with its state,
+  active/open sessions, agents, tokens, cost and idle time, plus **Open chat** and — when the
+  profile has one — **Open latest session**.
+- **Cost / tokens leaderboard** in the right-hand column, switchable between the two, ranked
+  descending; click a row to inspect that profile.
 - **Status-bar chip** — an always-mounted summary at the right end of the status bar
   (`🏢 2 busy` when something is working, otherwise `🏢 4 online`). Click it to open the office.
   Hover for the full breakdown.

@@ -6,6 +6,8 @@
 
 ## 截图
 
+![office-3d banner](./docs/banner.png)
+
 ![office-3d 截图](./docs/screenshot.jpeg)
 ![office-3d 截图](./docs/screenshot-2.jpeg)
 
@@ -23,6 +25,8 @@
 
 ## 页面之外
 
+- **点击工位**（或榜单行）查看该 profile：详情面板显示状态、活跃/未结束会话、agents、tokens、成本、空闲时长，并提供 **Open chat** 与（该 profile 有时）**Open latest session**。
+- **成本 / tokens 榜单**在右栏，可在两者间切换、降序排名；点行即查看该 profile。
 - **状态栏挂件** —— 常驻在状态栏右端的小结（有活在跑时显示 `🏢 2 busy`，否则 `🏢 4 online`）。点击打开办公室，悬停看完整分解。
 - **⌘K 命令面板 + 快捷键** —— "Open Office 3D"，默认 `mod+shift+o`，可在设置里改绑。
 - **`office_status` agent 工具** —— 只读。报告各 profile 的 online/busy/offline 与聚合的会话数/token/成本，让模型无需桌面 app 就能回答"现在谁在干活"。隐私边界与后端一致。

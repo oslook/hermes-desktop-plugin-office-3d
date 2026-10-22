@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] - 2026-10-22
+
+### Added
+- **Click a desk to inspect a profile.** `OfficeCanvas` hands the frame transform back to the
+  page, so a click is hit-tested against exactly the projection the pixels came from; the
+  clicked desk gets an accent mat on the floor and a detail panel opens with state, active/open
+  sessions, agents, tokens, cost and idle time.
+- **Open from the panel**: "Open chat" (`host.newChat(profile)`) always, and "Open latest
+  session" (`host.openSession(id, { profile })`) when the profile has one — the id comes from
+  the app's own `session.list` RPC, and the button simply does not appear when nothing resolves.
+- **Cost / tokens leaderboard** in the right-hand column, switchable between the two metrics and
+  ranked descending; a row click inspects that profile.
+- `docs/banner.png` — the 2:1 (1200×600) catalog banner, composed from the real screenshot.
+
+### Changed
+- Hit testing is pure (`deskHitBox` / `hitTestDesks`): overlapping isometric boxes resolve to the
+  **front-most** desk (the one painted last), and the harness asserts that against an
+  independent computation for 1–40 profiles on two canvas sizes.
+- `drawFrame` / `buildPalette` dropped their unused `mode` parameter — the theme has always come
+  from the `documentElement.dark` class.
+
 ## [1.1.0] - 2026-10-22
 
 ### Added
