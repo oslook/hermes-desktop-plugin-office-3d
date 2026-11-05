@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.0] - 2026-11-04
+
+### Added
+- **Delegated subagent attribution.** `delegate_task` children run as managed
+  workers inside the gateway and record `source='subagent'` sessions in the
+  TOP-LEVEL `state.db`, so a specialist desk (meo-finance, meo-coding, …)
+  showed offline while its delegation was actively working — all activity lit
+  up the `default` desk. The backend and `office_status` now parse each
+  in-flight delegation's route (explicit `profile` task field, or the
+  `[profile]` goal prefix specialist profiles already use) from
+  `async_delegations` and light up the routed desk while live subagent
+  sessions are active, with a new `delegated_sessions` count per entry.
+  Display-only heuristic; aggregate-only reads; every failure degrades to
+  "no attribution". Historical subagent sessions are not re-attributed.
+
 ## [1.3.0] - 2026-10-22
 
 > **One release.** Every version bump after 1.2.0 was an internal iteration that never

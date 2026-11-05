@@ -19,6 +19,27 @@ English | [中文](./README.zh-CN.md)
 | **idle** | online but no recent session activity | person in the lounge holding tea 🍵 |
 | **offline** | no live process / no recent activity | empty desk, dark monitor, dimmed name |
 
+### Delegated subagents (since v1.4.0)
+
+`delegate_task` children run as managed workers inside the gateway process and record
+their sessions in the **top-level** `state.db` with `source='subagent'` — not in the
+routed profile's own `state.db`. Without attribution, a specialist desk
+(`meo-finance`, `meo-coding`, …) would stay **offline** while its delegation is
+actively working, and all delegated activity would light up the `default` desk.
+
+While a delegation is in flight, the backend and `office_status` parse its route
+from the task's explicit `profile` field or the `[profile]` goal prefix in
+`async_delegations`, and light up the routed desk while live subagent sessions
+exist. Each entry carries a `delegated_sessions` counter.
+
+- Display-only heuristic: concurrent delegations routed to the same profile share
+  credit; historical (finished) subagent sessions are not re-attributed — recorded
+  usage stays under `default`.
+- Same privacy boundary as the rest of the plugin: aggregate-only reads
+  (`async_delegations.task_json` for route labels, `COUNT(*)` on `sessions`).
+- Degrades silently on older Hermes (no `async_delegations` table), locked db, or
+  malformed JSON.
+
 - Follows the Hermes light/dark theme automatically.
 - Bottom stat chips: **online / busy / active sessions / tokens / agents / cost** aggregated across every profile.
 - Backend reads only aggregate columns (COUNT/SUM/MAX) from each profile's `state.db` — never message contents.
