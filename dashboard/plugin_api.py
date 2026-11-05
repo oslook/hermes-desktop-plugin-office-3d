@@ -34,9 +34,13 @@ from fastapi import APIRouter
 
 router = APIRouter()
 
-# Resolve the Hermes home the same way the app does: honor $HERMES_HOME
-# (set under a named profile / custom install), fall back to ~/.hermes.
-HERMES_HOME = os.environ.get("HERMES_HOME") or os.path.expanduser("~/.hermes")
+# Never mistake a named profile's runtime home for the fleet root.
+try:
+    from hermes_constants import get_default_hermes_root
+except ImportError as exc:
+    raise RuntimeError("office-3d requires Hermes with get_default_hermes_root; please upgrade Hermes") from exc
+
+HERMES_HOME = str(get_default_hermes_root())
 
 # How long a computed /state payload may be reused (seconds). Frontend polls
 # every 5s; a 2s TTL collapses bursts without making the UI feel stale.

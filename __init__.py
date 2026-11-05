@@ -27,9 +27,14 @@ import sqlite3
 import time
 from typing import Any, Dict, List, Optional
 
-# Resolve the Hermes home the same way the app does: honour $HERMES_HOME (set
-# under a named profile / custom install), fall back to ~/.hermes.
-HERMES_HOME = os.environ.get("HERMES_HOME") or os.path.expanduser("~/.hermes")
+# Fail closed on older Hermes versions without fleet-root resolution: using a
+# named profile's HERMES_HOME as the root silently reports the wrong fleet.
+try:
+    from hermes_constants import get_default_hermes_root
+except ImportError as exc:
+    raise RuntimeError("office-3d requires Hermes with get_default_hermes_root; please upgrade Hermes") from exc
+
+HERMES_HOME = str(get_default_hermes_root())
 
 # A session counts as "active" (profile busy) if it saw activity this recently.
 ACTIVE_WINDOW_SEC = 90.0

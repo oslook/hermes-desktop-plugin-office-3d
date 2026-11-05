@@ -21,6 +21,8 @@ import {
   atom,
   useValue,
   useQuery,
+  gatewayActivationEpoch,
+  useGatewayActivationEpoch,
   profileColor,
   cn,
   EmptyState,
@@ -37,9 +39,26 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 // Route of the office page, shared by the sidebar row, the palette command and
 // the status-bar chip so they can never drift apart.
 const OFFICE_PATH = '/office-3d'
-// One React Query key for every consumer, so the chip and the page share a
-// single poll instead of each starting its own.
-const OFFICE_QUERY_KEY = ['office-3d', 'state']
+// The REST door follows the active backend, so cache and in-flight work must
+// follow its route and activation as well. Both consumers share this hook.
+function useOfficeQuery(ctx, pollSeconds) {
+  const connection = useValue(host.state.connectionId)
+  const profile = useValue(host.state.profile)
+  const epoch = useGatewayActivationEpoch()
+  const current = () => host.state.connectionId.get() === connection &&
+    host.state.profile.get() === profile && gatewayActivationEpoch() === epoch
+  return useQuery({
+    queryKey: ['office-3d', 'state', connection, profile, epoch],
+    queryFn: async () => {
+      if (!current()) throw new Error('Office route changed')
+      const result = await ctx.rest('/state')
+      if (!current()) throw new Error('Office route changed')
+      return result
+    },
+    refetchInterval: () => typeof document !== 'undefined' && document.hidden ? false : pollSeconds * 1000,
+    refetchOnWindowFocus: true,
+  })
+}
 
 // ---------------------------------------------------------------------------
 // Isometric projection helpers.
@@ -2116,15 +2135,8 @@ function OfficeSettingsPage({ prefs, update }) {
 // where the optional state-change notifications come from.
 function OfficeStatusChip({ ctx, prefs }) {
   const { pollSeconds, notifyOnChange } = useValue(prefs)
-  const query = useQuery({
-    queryKey: OFFICE_QUERY_KEY,
-    queryFn: () => ctx.rest('/state'),
-    refetchInterval: () =>
-      typeof document !== 'undefined' && document.hidden
-        ? false
-        : pollSeconds * 1000,
-    refetchOnWindowFocus: true,
-  })
+  const epoch = useGatewayActivationEpoch()
+  const query = useOfficeQuery(ctx, pollSeconds)
   const entries = Array.isArray(query.data) ? query.data : []
   const stats = useMemo(() => summarize(entries), [entries])
 
@@ -2139,8 +2151,8 @@ function OfficeStatusChip({ ctx, prefs }) {
         next.set(e.profile, e.busy ? 'busy' : e.online ? 'idle' : 'offline')
       }
     }
-    const prev = seenRef.current
-    seenRef.current = next
+    const prev = seenRef.current?.epoch === epoch ? seenRef.current.states : null
+    seenRef.current = { epoch, states: next }
     if (!prev || next.size === 0) return
     for (const [profile, state] of next) {
       const before = prev.get(profile)
@@ -2153,7 +2165,7 @@ function OfficeStatusChip({ ctx, prefs }) {
         })
       }
     }
-  }, [entries, notifyOnChange])
+  }, [entries, notifyOnChange, epoch])
 
   const hasData = Array.isArray(query.data)
   const label = !hasData
@@ -2464,19 +2476,13 @@ function leaderValue(entry, metric) {
 function OfficePage({ ctx, prefs }) {
   const { pollSeconds, hideOffline } = useValue(prefs)
   const [selectedProfile, setSelectedProfile] = useState(null)
+  const epoch = useGatewayActivationEpoch()
+  useEffect(() => { setSelectedProfile(null) }, [epoch])
   // Pause polling while the document is hidden (other tab / minimized).
   // Canvas rAF already stops on visibilitychange; the query must too,
   // otherwise we keep opening backend work on a page nobody sees.
   // The status-bar chip polls the same query key, so this never doubles up.
-  const query = useQuery({
-    queryKey: OFFICE_QUERY_KEY,
-    queryFn: () => ctx.rest('/state'),
-    refetchInterval: () =>
-      typeof document !== 'undefined' && document.hidden
-        ? false
-        : pollSeconds * 1000,
-    refetchOnWindowFocus: true,
-  })
+  const query = useOfficeQuery(ctx, pollSeconds)
 
   // Selecting a desk or a leaderboard row. Held by profile NAME, not index, so
   // it survives a re-sort or a filtered-out row.
