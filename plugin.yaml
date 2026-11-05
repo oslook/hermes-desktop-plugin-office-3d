@@ -14,8 +14,6 @@ requires_hermes: ">=0.20.0"
 kind: standalone
 provides_tools:
   - office_status
-# The backend judges profile liveness with os.kill(pid, 0). On Windows every
-# signal other than CTRL_C_EVENT/CTRL_BREAK_EVENT is routed through
-# TerminateProcess, so os.kill(pid, 0) would *kill* the target process (the
-# gateway). The plugin is therefore POSIX-only.
+# Liveness uses Hermes gateway resolution (including multiplexed profiles),
+# not bare PID existence. POSIX-only: Windows support has not been validated.
 platforms: [linux, macos]

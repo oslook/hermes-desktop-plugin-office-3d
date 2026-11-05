@@ -3,9 +3,8 @@
 Scans gateway_state.json files across Hermes profiles and returns profile
 status entries for the Office 3D visualization.
 
-'online' is determined by PROCESS LIVENESS (os.kill(pid, 0)), not by the
-freshness of updated_at — the gateway does not refresh updated_at on a
-short interval, so a stale timestamp does not imply the gateway is down.
+'online' uses Hermes gateway liveness, including multiplexed profiles, not
+updated_at freshness.
 
 FD / load design (v1.0.2):
 - One cached read-only SQLite connection per profile state.db (not open/close
@@ -28,6 +27,8 @@ import os
 import sqlite3
 import threading
 import time
+from pathlib import Path
+from functools import partial
 from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import APIRouter
@@ -39,6 +40,11 @@ try:
     from hermes_constants import get_default_hermes_root
 except ImportError as exc:
     raise RuntimeError("office-3d requires Hermes with get_default_hermes_root; please upgrade Hermes") from exc
+
+try:
+    from gateway.status import resolve_gateway_liveness, get_running_pid_cached
+except ImportError as exc:
+    raise RuntimeError("office-3d requires Hermes with resolve_gateway_liveness; please upgrade Hermes") from exc
 
 HERMES_HOME = str(get_default_hermes_root())
 
@@ -272,6 +278,18 @@ def _read_profile(profile: str) -> Dict[str, Any]:
         entry["busy"] = True
         entry["state"] = "working"
 
+    liveness = resolve_gateway_liveness(
+        profile_dir=Path(path).parent,
+        pid_probe=partial(get_running_pid_cached, cleanup_stale=False),
+    )
+    if liveness.running:
+        entry["online"] = True
+        if not entry["busy"]:
+            entry["state"] = "unknown"
+            entry["idle_since"] = entry.get("last_session_activity")
+    # Ignore a served profile's stale standalone record and host-wide counters.
+    if liveness.source == "multiplexer":
+        return entry
     if not os.path.exists(path):
         return entry
     try:
@@ -322,13 +340,7 @@ def _read_profile(profile: str) -> Dict[str, Any]:
     updated_at_raw = data.get("updated_at")
     updated_at_str = updated_at_raw if isinstance(updated_at_raw, str) else None
 
-    pid_raw = data.get("pid")
-    try:
-        pid_int = int(pid_raw)
-    except (TypeError, ValueError):
-        pid_int = 0
-
-    online = _pid_alive(pid_int)
+    online = liveness.running
     sess_active = int(entry.get("active_sessions") or 0) > 0
 
     entry["active_agents"] = active_int

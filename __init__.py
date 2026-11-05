@@ -11,9 +11,8 @@ the two halves run in different processes (the gateway vs. the dashboard web
 server), each is loaded independently, and neither can import the other. Both
 read the same two sources:
 
-* ``gateway_state.json`` per profile — liveness is decided by PROCESS liveness
-  (``os.kill(pid, 0)``), never by ``updated_at`` freshness, because the gateway
-  does not refresh that timestamp on a short interval.
+* Hermes gateway liveness — includes multiplexed and standalone profiles,
+  without relying on ``updated_at`` freshness.
 * ``state.db`` per profile — opened READ-ONLY, aggregate columns only.
 
 Privacy: only COUNT/SUM/MAX over the ``sessions`` table. Never message content,
@@ -25,6 +24,8 @@ import json
 import os
 import sqlite3
 import time
+from pathlib import Path
+from functools import partial
 from typing import Any, Dict, List, Optional
 
 # Fail closed on older Hermes versions without fleet-root resolution: using a
@@ -33,6 +34,11 @@ try:
     from hermes_constants import get_default_hermes_root
 except ImportError as exc:
     raise RuntimeError("office-3d requires Hermes with get_default_hermes_root; please upgrade Hermes") from exc
+
+try:
+    from gateway.status import resolve_gateway_liveness, get_running_pid_cached
+except ImportError as exc:
+    raise RuntimeError("office-3d requires Hermes with resolve_gateway_liveness; please upgrade Hermes") from exc
 
 HERMES_HOME = str(get_default_hermes_root())
 
@@ -188,6 +194,18 @@ def _read_profile(profile: str) -> Dict[str, Any]:
         entry["state"] = "working"
 
     path = _state_path(profile)
+    liveness = resolve_gateway_liveness(
+        profile_dir=Path(path).parent,
+        pid_probe=partial(get_running_pid_cached, cleanup_stale=False),
+    )
+    if liveness.running:
+        entry["online"] = True
+        if not entry["busy"]:
+            entry["state"] = "unknown"
+            entry["idle_since"] = entry.get("last_session_activity")
+    # A served profile's old state file belongs to a previous gateway, not the host.
+    if liveness.source == "multiplexer":
+        return entry
     if not os.path.exists(path):
         return entry
 
@@ -223,10 +241,8 @@ def _read_profile(profile: str) -> Dict[str, Any]:
         return entry
 
     entry["active_agents"] = _as_int(data.get("active_agents"))
-    pid = _as_int(data.get("pid"))
-
     sess_active = int(entry.get("active_sessions") or 0) > 0
-    entry["online"] = bool(_pid_alive(pid) or sess_active)
+    entry["online"] = bool(liveness.running or sess_active)
     entry["busy"] = bool(sess_active)
     gw_state = data.get("gateway_state")
     entry["state"] = (

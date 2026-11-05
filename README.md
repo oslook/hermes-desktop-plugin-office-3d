@@ -68,7 +68,7 @@ When the folder lands in a `plugins/` root, the Desktop app copies `desktop/plug
 ## How it works
 
 1. **Desktop half** — `desktop/plugin.js` — a single ESM file the desktop app loads at runtime (canvas 2D isometric scene; no build step).
-2. **Backend half** — `dashboard/plugin_api.py` + `manifest.json` — a FastAPI router mounted at `/api/plugins/office-3d/state` by the dashboard web server. It scans each profile's `gateway_state.json` (process liveness) and `state.db` (session activity + token/cost aggregates).
+2. **Backend half** — `dashboard/plugin_api.py` + `manifest.json` — a FastAPI router mounted at `/api/plugins/office-3d/state` by the dashboard web server. It uses Hermes gateway liveness resolution, including multiplexed profiles, and reads `gateway_state.json` and `state.db` for status and session activity + token/cost aggregates. Recent active sessions also mark a profile online.
 3. **Enable flag** — `office-3d` must be listed in `plugins.enabled` in your `config.yaml` before the backend is imported (security gate). `hermes plugins enable office-3d` writes it.
 4. **Agent half** — `__init__.py` registers one read-only tool, `office_status`, which scans the same two sources directly from the gateway process (no HTTP, no credentials).
 
@@ -113,7 +113,7 @@ Then make it take effect:
 
 - Hermes Desktop **0.20.0+** — the desktop app is required; the CLI/gateway alone does not load desktop plugins. (Developed on 0.20.0.)
 - The dashboard web server running (it serves `/api/plugins/...`).
-- **Linux or macOS.** Windows is not supported: the backend judges profile liveness with `os.kill(pid, 0)`, and on Windows every signal other than `CTRL_C_EVENT`/`CTRL_BREAK_EVENT` is routed through `TerminateProcess`, which would *kill* the target process (the gateway). The manifest declares `platforms: [linux, macos]` accordingly.
+- **Linux or macOS.** Windows support has not been validated; the manifest declares `platforms: [linux, macos]`.
 
 ## Uninstall
 
