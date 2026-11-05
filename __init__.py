@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sqlite3
 import time
 from pathlib import Path
@@ -67,18 +68,37 @@ def _as_int(value: Any, default: int = 0) -> int:
         return default
 
 
-def _discover_profiles() -> List[str]:
-    """Profiles on THIS machine: 'default' (the root home) plus every directory
-    under <home>/profiles/. Nothing is hard-coded."""
-    order = ["default"]
-    prof_dir = os.path.join(HERMES_HOME, "profiles")
-    try:
-        order.extend(
-            sorted(
-                d for d in os.listdir(prof_dir)
-                if os.path.isdir(os.path.join(prof_dir, d))
-            )
+# Keep both independently loaded plugin halves aligned with Hermes discovery.
+# Older supported Hermes releases may not expose these helpers yet.
+try:
+    from hermes_constants import PROFILE_ID_RE, named_profile_is_live
+except ImportError:
+    PROFILE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+
+    def named_profile_is_live(home: Path) -> bool:
+        markers = ("config.yaml", ".env", "SOUL.md", "profile.yaml", "auth.json", "state.db")
+        return (
+            home.is_dir()
+            and not (home.parent / ".deleted" / home.name).exists()
+            and any((home / marker).is_file() or (home / marker).is_symlink()
+                    for marker in markers)
         )
+
+
+def _discover_profiles() -> List[str]:
+    """Default first, then valid, non-deleted profiles in this Hermes home.
+
+    Discovery is independent of gateway/session liveness: offline profiles
+    still own desks. Keep the scan scoped to the home used by the readers.
+    """
+    order = ["default"]
+    try:
+        order.extend(sorted(
+            entry.name for entry in (Path(HERMES_HOME) / "profiles").iterdir()
+            if entry.name != "default"
+            and PROFILE_ID_RE.fullmatch(entry.name)
+            and named_profile_is_live(entry)
+        ))
     except OSError:
         pass
     return order
@@ -166,13 +186,126 @@ def _read_session_stats(profile: str) -> Dict[str, Any]:
     return stats
 
 
-def _read_profile(profile: str) -> Dict[str, Any]:
+# --- delegated subagent attribution (v1.4.0) ---
+#
+# delegate_task children run as managed workers inside the gateway process and
+# record their sessions in the TOP-LEVEL state.db with source='subagent' and
+# profile_name='default'. Without attribution that activity can only ever
+# light up the 'default' desk, so a specialist desk (meo-finance, meo-coding,
+# …) shows offline while its delegation is actively working.
+#
+# Attribute LIVE subagent sessions to the profile each in-flight delegation is
+# routed to. The route is parsed from the delegation task's explicit 'profile'
+# field, or from the '[profile]' goal prefix — the same convention specialist
+# profiles already use. Display-only heuristic: two concurrent delegations
+# routed to the same profile share credit, and historical (finished) subagent
+# sessions are not re-attributed. Reads the async_delegations table with
+# aggregate-only access; every failure degrades to "no attribution".
+
+_DELEGATION_ACTIVE_STATES = ("running", "dispatched", "pending")
+
+
+def _route_labels_from_task(task_json: Any) -> List[str]:
+    """Profile labels a delegation task is routed to, in first-seen order."""
+    try:
+        data = json.loads(task_json or "{}")
+    except (json.JSONDecodeError, ValueError):
+        return []
+    tasks = data.get("tasks") if isinstance(data.get("tasks"), list) else [data]
+    labels: List[str] = []
+    for task in tasks:
+        if not isinstance(task, dict):
+            continue
+        explicit = task.get("profile")
+        if isinstance(explicit, str) and explicit.strip():
+            label = explicit.strip().lower()
+            if label not in labels:
+                labels.append(label)
+            continue
+        goal = task.get("goal") or task.get("task") or ""
+        match = re.match(
+            r"^\s*\[([a-z0-9][a-z0-9_-]{0,63})\]", str(goal), re.IGNORECASE
+        )
+        if match:
+            label = match.group(1).lower()
+            if label not in labels:
+                labels.append(label)
+    return labels
+
+
+def _read_delegation_routes() -> Dict[str, int]:
+    """Profile label -> number of delegations currently in flight for it."""
+    path = _db_path("default")
+    if not os.path.exists(path):
+        return {}
+    marks = ", ".join("?" for _ in _DELEGATION_ACTIVE_STATES)
+    con: Optional[sqlite3.Connection] = None
+    try:
+        con = sqlite3.connect("file:" + path + "?mode=ro", uri=True, timeout=2.0)
+        try:
+            con.execute("PRAGMA query_only=ON")
+        except sqlite3.Error:
+            pass
+        rows = con.execute(
+            "SELECT task_json FROM async_delegations WHERE state IN (" + marks + ")",
+            _DELEGATION_ACTIVE_STATES,
+        ).fetchall()
+    except Exception:
+        # Older Hermes without async_delegations, or a locked db.
+        return {}
+    finally:
+        if con is not None:
+            try:
+                con.close()
+            except Exception:
+                pass
+    counts: Dict[str, int] = {}
+    for (task_json,) in rows:
+        for label in _route_labels_from_task(task_json):
+            counts[label] = counts.get(label, 0) + 1
+    return counts
+
+
+def _count_live_subagent_sessions() -> int:
+    """Subagent sessions with activity inside the active window (top-level db)."""
+    path = _db_path("default")
+    if not os.path.exists(path):
+        return 0
+    con: Optional[sqlite3.Connection] = None
+    try:
+        con = sqlite3.connect("file:" + path + "?mode=ro", uri=True, timeout=2.0)
+        try:
+            con.execute("PRAGMA query_only=ON")
+        except sqlite3.Error:
+            pass
+        row = con.execute(
+            "SELECT COUNT(*) FROM sessions "
+            "WHERE source = 'subagent' AND last_activity_at >= ?",
+            (time.time() - ACTIVE_WINDOW_SEC,),
+        ).fetchone()
+    except Exception:
+        return 0
+    finally:
+        if con is not None:
+            try:
+                con.close()
+            except Exception:
+                pass
+    return int(row[0] or 0) if row else 0
+
+
+def _read_profile(
+    profile: str,
+    delegation_routes: Optional[Dict[str, int]] = None,
+    live_subagents: Optional[int] = None,
+) -> Dict[str, Any]:
     entry: Dict[str, Any] = {
         "profile": profile,
         "online": False,
         "busy": False,
         "state": "offline",
         "active_agents": 0,
+        "delegated_sessions": 0,
         "active_sessions": 0,
         "open_sessions": 0,
         "tokens_total": 0,
@@ -192,6 +325,20 @@ def _read_profile(profile: str) -> Dict[str, Any]:
         entry["online"] = True
         entry["busy"] = True
         entry["state"] = "working"
+
+    # Delegated subagent attribution: a specialist desk lights up while a
+    # delegation routed to it has live subagent activity (managed workers
+    # record sessions in the top-level state.db, not this profile's own db).
+    if profile != "default":
+        if delegation_routes is None:
+            delegation_routes = _read_delegation_routes()
+        if live_subagents is None:
+            live_subagents = _count_live_subagent_sessions()
+        if delegation_routes.get(profile) and live_subagents > 0:
+            entry["delegated_sessions"] = int(live_subagents)
+            entry["online"] = True
+            entry["busy"] = True
+            entry["state"] = "working"
 
     path = _state_path(profile)
     liveness = resolve_gateway_liveness(
@@ -241,7 +388,7 @@ def _read_profile(profile: str) -> Dict[str, Any]:
         return entry
 
     entry["active_agents"] = _as_int(data.get("active_agents"))
-    sess_active = int(entry.get("active_sessions") or 0) > 0
+    sess_active = bool(entry.get("active_sessions") or entry.get("delegated_sessions"))
     entry["online"] = bool(liveness.running or sess_active)
     entry["busy"] = bool(sess_active)
     gw_state = data.get("gateway_state")
@@ -265,7 +412,13 @@ def collect(profile: Optional[str] = None) -> List[Dict[str, Any]]:
     """Status entries for one profile, or for every profile on this machine."""
     if profile:
         return [_read_profile(str(profile))]
-    return [_read_profile(p) for p in _discover_profiles()]
+    # Attribution inputs are computed once per scan, not per profile.
+    routes = _read_delegation_routes()
+    live_subagents = _count_live_subagent_sessions() if routes else 0
+    return [
+        _read_profile(p, delegation_routes=routes, live_subagents=live_subagents)
+        for p in _discover_profiles()
+    ]
 
 
 def _format(entries: List[Dict[str, Any]]) -> str:

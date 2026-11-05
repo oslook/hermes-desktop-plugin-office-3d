@@ -120,6 +120,28 @@ class GatewayLivenessTest(unittest.TestCase):
                     entry = module._read_profile('worker')
                     self.assertEqual((entry['online'], entry['busy'], entry['state']), (True, True, 'working'))
 
+    def test_delegation_and_discovery_with_mux_and_stale_state(self):
+        worker = self.home('worker')
+        (worker / 'config.yaml').touch()
+        (worker / 'gateway_state.json').write_text(json.dumps({'gateway_state': 'stopped'}))
+        ghost = self.home('ghost')
+        (ghost / 'runtime').mkdir()
+        with sqlite3.connect(self.root / 'state.db') as db:
+            db.execute('CREATE TABLE sessions(source TEXT, last_activity_at REAL, ended_at REAL, input_tokens INTEGER, output_tokens INTEGER, actual_cost_usd REAL, estimated_cost_usd REAL)')
+            db.execute('INSERT INTO sessions VALUES (?, ?, NULL, 1, 2, NULL, 0)', ('subagent', time.time()))
+            db.execute('CREATE TABLE async_delegations(state TEXT, task_json TEXT)')
+            db.execute('INSERT INTO async_delegations VALUES (?, ?)', ('running', json.dumps({'profile': 'worker'})))
+        for module in self.modules:
+            for source, running in [('multiplexer', True), ('none', False)]:
+                with self.subTest(backend=module.__name__, source=source), \
+                     patch.object(module, 'resolve_gateway_liveness', return_value=types.SimpleNamespace(source=source, running=running)):
+                    entries = module.collect() if hasattr(module, 'collect') else module._collect_state()
+                    self.assertEqual([e['profile'] for e in entries], ['default', 'worker'])
+                    entry = entries[1]
+                    self.assertEqual((entry['delegated_sessions'], entry['online'], entry['busy'], entry['state']), (1, True, True, 'working'))
+                    if hasattr(module, '_state_cache'):
+                        module._state_cache = None
+
 
 if __name__ == '__main__':
     unittest.main()

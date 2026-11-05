@@ -56,4 +56,10 @@ buttons[0].props.onClick(); assert.deepEqual(Array.from(saved.excludedProfileIds
 render(registrations.status.render()); effects.splice(0).forEach(f=>f()); assert.equal(notices.length,0,'re-enabling seeds notification state')
 assert.equal(getButtons()[0].props['aria-pressed'],true)
 assert.deepEqual(Array.from(mod.namespace.readPrefs({storage:{get:()=>({excludedProfileIds:'bad'})}}).excludedProfileIds),[])
+// A routed specialist is still filterable even when delegation marks it busy.
+const delegated = [{profile:'default',online:true}, {profile:'worker',online:true,busy:true,delegated_sessions:1}]
+const hiddenDelegated = mod.namespace.officeView(delegated,false,'worker',['worker'])
+assert.deepEqual(Array.from(hiddenDelegated.all,e=>e.profile),['default'])
+assert.equal(hiddenDelegated.selected,null)
+assert.deepEqual(Array.from(mod.namespace.officeView(delegated,false,'worker',[]).all,e=>e.profile),['default','worker'])
 console.log('profile-visibility: settings, persistence, filtering, chip and notification behavior passed')

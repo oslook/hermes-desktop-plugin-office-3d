@@ -24,6 +24,7 @@ import asyncio
 import glob
 import json
 import os
+import re
 import sqlite3
 import threading
 import time
@@ -64,21 +65,37 @@ _state_cache_lock = threading.Lock()
 _state_cache: Optional[Tuple[float, List[Dict[str, Any]]]] = None
 
 
-def _discover_profiles() -> List[str]:
-    """Discover profiles on THIS machine instead of hard-coding names.
+# Keep both independently loaded plugin halves aligned with Hermes discovery.
+# Older supported Hermes releases may not expose these helpers yet.
+try:
+    from hermes_constants import PROFILE_ID_RE, named_profile_is_live
+except ImportError:
+    PROFILE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 
-    'default' (the root home) is always first; named profiles are whatever
-    directories exist under <home>/profiles/, sorted. This makes the plugin
-    portable to any user's setup, not just the author's.
+    def named_profile_is_live(home: Path) -> bool:
+        markers = ("config.yaml", ".env", "SOUL.md", "profile.yaml", "auth.json", "state.db")
+        return (
+            home.is_dir()
+            and not (home.parent / ".deleted" / home.name).exists()
+            and any((home / marker).is_file() or (home / marker).is_symlink()
+                    for marker in markers)
+        )
+
+
+def _discover_profiles() -> List[str]:
+    """Default first, then valid, non-deleted profiles in this Hermes home.
+
+    Discovery is independent of gateway/session liveness: offline profiles
+    still own desks. Keep the scan scoped to the home used by the readers.
     """
     order = ["default"]
-    prof_dir = os.path.join(HERMES_HOME, "profiles")
     try:
-        names = sorted(
-            d for d in os.listdir(prof_dir)
-            if os.path.isdir(os.path.join(prof_dir, d))
-        )
-        order.extend(names)
+        order.extend(sorted(
+            entry.name for entry in (Path(HERMES_HOME) / "profiles").iterdir()
+            if entry.name != "default"
+            and PROFILE_ID_RE.fullmatch(entry.name)
+            and named_profile_is_live(entry)
+        ))
     except OSError:
         pass
     return order
@@ -241,14 +258,112 @@ def _read_session_stats(profile: str) -> Dict[str, Any]:
     return result
 
 
-def _read_profile(profile: str) -> Dict[str, Any]:
-    # Bots stores its title in profile.yaml ui_meta; use Hermes' metadata reader
-    # so its mtime-based cache and missing/corrupt-file handling remain shared.
+# --- delegated subagent attribution (v1.4.0) ---
+#
+# delegate_task children run as managed workers inside the gateway process and
+# record their sessions in the TOP-LEVEL state.db with source='subagent' and
+# profile_name='default'. Without attribution that activity can only ever
+# light up the 'default' desk, so a specialist desk (meo-finance, meo-coding,
+# …) shows offline while its delegation is actively working.
+#
+# Attribute LIVE subagent sessions to the profile each in-flight delegation is
+# routed to. The route is parsed from the delegation task's explicit 'profile'
+# field, or from the '[profile]' goal prefix — the same convention specialist
+# profiles already use. Display-only heuristic: two concurrent delegations
+# routed to the same profile share credit, and historical (finished) subagent
+# sessions are not re-attributed. Reads the async_delegations table with
+# aggregate-only access; every failure degrades to "no attribution".
+
+_DELEGATION_ACTIVE_STATES = ("running", "dispatched", "pending")
+
+
+def _route_labels_from_task(task_json: Any) -> List[str]:
+    """Profile labels a delegation task is routed to, in first-seen order."""
+    try:
+        data = json.loads(task_json or "{}")
+    except (json.JSONDecodeError, ValueError):
+        return []
+    tasks = data.get("tasks") if isinstance(data.get("tasks"), list) else [data]
+    labels: List[str] = []
+    for task in tasks:
+        if not isinstance(task, dict):
+            continue
+        explicit = task.get("profile")
+        if isinstance(explicit, str) and explicit.strip():
+            label = explicit.strip().lower()
+            if label not in labels:
+                labels.append(label)
+            continue
+        goal = task.get("goal") or task.get("task") or ""
+        match = re.match(
+            r"^\s*\[([a-z0-9][a-z0-9_-]{0,63})\]", str(goal), re.IGNORECASE
+        )
+        if match:
+            label = match.group(1).lower()
+            if label not in labels:
+                labels.append(label)
+    return labels
+
+
+def _read_delegation_routes() -> Dict[str, int]:
+    """Profile label -> number of delegations currently in flight for it."""
+    path = _db_path("default")
+    if not os.path.exists(path):
+        return {}
+    marks = ", ".join("?" for _ in _DELEGATION_ACTIVE_STATES)
+    with _db_lock:
+        con = _get_ro_conn_unlocked(path)
+        if con is None:
+            return {}
+        try:
+            rows = con.execute(
+                "SELECT task_json FROM async_delegations WHERE state IN ("
+                + marks
+                + ")",
+                _DELEGATION_ACTIVE_STATES,
+            ).fetchall()
+        except Exception:
+            # Older Hermes without async_delegations, or a locked db.
+            return {}
+    counts: Dict[str, int] = {}
+    for (task_json,) in rows:
+        for label in _route_labels_from_task(task_json):
+            counts[label] = counts.get(label, 0) + 1
+    return counts
+
+
+def _count_live_subagent_sessions() -> int:
+    """Subagent sessions with activity inside the 90s window (top-level db)."""
+    path = _db_path("default")
+    if not os.path.exists(path):
+        return 0
+    with _db_lock:
+        con = _get_ro_conn_unlocked(path)
+        if con is None:
+            return 0
+        try:
+            row = con.execute(
+                "SELECT COUNT(*) FROM sessions "
+                "WHERE source = 'subagent' AND last_activity_at >= ?",
+                (time.time() - 90.0,),
+            ).fetchone()
+        except Exception:
+            return 0
+    return int(row[0] or 0) if row else 0
+
+
+def _read_profile(
+    profile: str,
+    delegation_routes: Optional[Dict[str, int]] = None,
+    live_subagents: Optional[int] = None,
+) -> Dict[str, Any]:
+    # Share Bots' metadata reader, including its cache and error handling.
     meta = read_profile_meta(Path(_state_path(profile)).parent)
     entry: Dict[str, Any] = {
         "profile": profile,
         "display_name": meta.get("bot_title") or meta.get("display_name") or "",
         "active_agents": 0,
+        "delegated_sessions": 0,
         "state": "offline",
         "updated_at": None,
         "online": False,
@@ -283,6 +398,20 @@ def _read_profile(profile: str) -> Dict[str, Any]:
         entry["online"] = True
         entry["busy"] = True
         entry["state"] = "working"
+
+    # Delegated subagent attribution: a specialist desk lights up while a
+    # delegation routed to it has live subagent activity (managed workers
+    # record sessions in the top-level state.db, not this profile's own db).
+    if profile != "default":
+        if delegation_routes is None:
+            delegation_routes = _read_delegation_routes()
+        if live_subagents is None:
+            live_subagents = _count_live_subagent_sessions()
+        if delegation_routes.get(profile) and live_subagents > 0:
+            entry["delegated_sessions"] = int(live_subagents)
+            entry["online"] = True
+            entry["busy"] = True
+            entry["state"] = "working"
 
     liveness = resolve_gateway_liveness(
         profile_dir=Path(path).parent,
@@ -347,14 +476,13 @@ def _read_profile(profile: str) -> Dict[str, Any]:
     updated_at_str = updated_at_raw if isinstance(updated_at_raw, str) else None
 
     online = liveness.running
-    sess_active = int(entry.get("active_sessions") or 0) > 0
+    sess_active = bool(entry.get("active_sessions") or entry.get("delegated_sessions"))
 
     entry["active_agents"] = active_int
     # online if the gateway process is alive OR there is live session activity
     # (worker profiles have sessions but no persistent gateway pid).
     entry["online"] = bool(online or sess_active)
-    # busy is driven by session activity (active_sessions > 0), NOT by gateway
-    # active_agents. active_agents is kept as a display-only counter.
+    # Busy includes local or attributed delegated sessions, not gateway counters.
     entry["busy"] = bool(sess_active)
     entry["updated_at"] = updated_at_str  # informational only
     # state text: prefer 'working' when sessions are live, else the gateway's.
@@ -397,7 +525,13 @@ def _collect_state() -> List[Dict[str, Any]]:
         if cached is not None and cached[0] > now:
             return cached[1]
 
-    payload = [_read_profile(p) for p in _discover_profiles()]
+    # Attribution inputs are computed once per scan, not per profile.
+    routes = _read_delegation_routes()
+    live_subagents = _count_live_subagent_sessions() if routes else 0
+    payload = [
+        _read_profile(p, delegation_routes=routes, live_subagents=live_subagents)
+        for p in _discover_profiles()
+    ]
     with _state_cache_lock:
         _state_cache = (now + _STATE_TTL_SEC, payload)
     return payload

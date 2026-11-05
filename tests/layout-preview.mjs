@@ -20,7 +20,8 @@ export const atom=v=>{const listeners=new Set();return {get:()=>v,set:n=>{v=n;li
 export const useValue=a=>useSyncExternalStore(a.subscribe,a.get);
 export const query=atom({data:[],isLoading:false,isError:false});
 export const useQuery=()=>useValue(query);
-export const host={request:async()=>({sessions:[]}),newChat:p=>window.__opened=p,notifyError:()=>{},navigate:()=>{}};
+export const gatewayActivationEpoch=()=>1, useGatewayActivationEpoch=()=>1;
+export const host={state:{connectionId:atom('local'),profile:atom('default')},request:async()=>({sessions:[]}),newChat:p=>window.__opened=p,notifyError:()=>{},navigate:()=>{}};
 export const profileColor=p=>['#6ea8fe','#e0ac6c','#b6b2ef'][String(p).length%3];
 export const cn=(...a)=>a.filter(Boolean).join(' ');
 export const EmptyState=({title,description})=>h('div',{'data-empty':true,className:'p-4'},h('h2',null,title),h('p',null,description));
