@@ -20,7 +20,7 @@ English | [中文](./README.zh-CN.md)
 | **offline** | no live process / no recent activity | empty desk, dark monitor, dimmed name |
 
 - Follows the Hermes light/dark theme automatically.
-- Bottom stat chips: **online / busy / active sessions / tokens / agents / cost** aggregated across every profile.
+- The overview counts enabled profiles, including offline ones even when offline desks are hidden.
 - Backend reads only aggregate columns (COUNT/SUM/MAX) from each profile's `state.db` — never message contents.
 
 ## Beyond the page
@@ -39,7 +39,14 @@ English | [中文](./README.zh-CN.md)
   offline with aggregate session / token / cost totals, so the model can answer "who is
   working right now?" without the Desktop app. Same privacy boundary as the backend.
 - **Settings ▸ Plugins ▸ Office 3D** — refresh interval (2s / 5s / 15s / 60s), hide offline
-  profiles, and opt-in desktop notifications when a profile changes state.
+  profiles, choose visible profiles (including `default`), and opt in to state-change notifications.
+  All profiles, including newly discovered ones, are enabled by default. The profile switches
+  remain available for offline profiles and persist in Desktop's plugin storage, shared across
+  profiles in that client. They affect only this UI, not gateways or the `office_status` tool.
+  Disabled profiles are excluded from the office, details, overview, status chip and notifications.
+  The status chip and notifications also apply the hide-offline filter; newly visible profiles
+  seed notification state rather than triggering a toast. The overview still counts enabled
+  offline profiles, even when their desks are hidden.
 
 ## Built with
 

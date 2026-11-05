@@ -2066,6 +2066,7 @@ const PREFS_DEFAULTS = {
   pollSeconds: 5,
   hideOffline: false,
   notifyOnChange: false,
+  excludedProfileIds: [],
 }
 const POLL_CHOICES = ['2', '5', '15', '60']
 
@@ -2085,7 +2086,15 @@ function readPrefs(ctx) {
       : PREFS_DEFAULTS.pollSeconds
   merged.hideOffline = !!merged.hideOffline
   merged.notifyOnChange = !!merged.notifyOnChange
+  merged.excludedProfileIds = Array.isArray(merged.excludedProfileIds)
+    ? [...new Set(merged.excludedProfileIds.filter((id) => typeof id === 'string'))]
+    : []
   return merged
+}
+
+function enabledProfiles(entries, excludedProfileIds) {
+  const excluded = new Set(Array.isArray(excludedProfileIds) ? excludedProfileIds : [])
+  return (Array.isArray(entries) ? entries : []).filter((e) => e && !excluded.has(e.profile))
 }
 
 // Aggregate the per-profile entries into the numbers the chips show.
@@ -2106,8 +2115,10 @@ function summarize(entries) {
 
 // Settings ▸ Plugins ▸ Office 3D. Built from the app's own settings rows so it
 // looks like core Settings.
-function OfficeSettingsPage({ prefs, update }) {
-  const { pollSeconds, hideOffline, notifyOnChange } = useValue(prefs)
+function OfficeSettingsPage({ ctx, prefs, update }) {
+  const { pollSeconds, hideOffline, notifyOnChange, excludedProfileIds } = useValue(prefs)
+  const query = useOfficeQuery(ctx, pollSeconds)
+  const profiles = Array.isArray(query.data) ? query.data : []
   return jsxs('div', {
     className: 'flex flex-col',
     children: [
@@ -2135,6 +2146,38 @@ function OfficeSettingsPage({ prefs, update }) {
           'A desktop toast when a profile goes busy, idle or offline. The status-bar chip is the poller, so keep it enabled for this to fire.',
         onChange: (on) => update({ notifyOnChange: on }),
       }),
+      jsxs('section', {
+        className: 'flex flex-col gap-2 py-3',
+        'aria-label': 'Visible profiles',
+        children: [
+          jsx('h3', { className: 'text-sm font-semibold text-[var(--ui-text-secondary)]', children: 'Visible profiles' }),
+          jsx('p', { className: 'text-xs text-[var(--ui-text-tertiary)]', children: 'Choose which profiles appear in the office. New profiles are shown by default; this does not stop their gateways.' }),
+          query.isError ? jsx('p', { children: 'Could not load profiles. Check the backend and try again.' }) : null,
+          query.isLoading ? jsx('p', { children: 'Loading profiles…' }) : null,
+          jsx('div', {
+            className: 'flex flex-wrap gap-2',
+            children: profiles.map((entry) => {
+              const enabled = !excludedProfileIds.includes(entry.profile)
+              return jsx('button', {
+                type: 'button',
+                'aria-pressed': enabled,
+                className: 'rounded-md border px-3 py-1 text-sm',
+                style: {
+                  backgroundColor: enabled ? 'var(--ui-accent)' : 'var(--ui-bg-tertiary)',
+                  color: enabled ? 'var(--ui-bg-editor)' : 'var(--ui-text-primary)',
+                  borderColor: enabled ? 'var(--ui-accent)' : 'var(--ui-stroke-secondary)',
+                },
+                onClick: () => update((current) => ({
+                  excludedProfileIds: current.excludedProfileIds.includes(entry.profile)
+                    ? current.excludedProfileIds.filter((id) => id !== entry.profile)
+                    : [...current.excludedProfileIds, entry.profile],
+                })),
+                children: entry.profile,
+              }, entry.profile)
+            }),
+          }),
+        ],
+      }),
     ],
   })
 }
@@ -2142,17 +2185,20 @@ function OfficeSettingsPage({ prefs, update }) {
 // Status-bar chip: a one-glance summary that is always mounted, so it is also
 // where the optional state-change notifications come from.
 function OfficeStatusChip({ ctx, prefs }) {
-  const { pollSeconds, notifyOnChange } = useValue(prefs)
+  const { pollSeconds, notifyOnChange, hideOffline, excludedProfileIds } = useValue(prefs)
   const epoch = useGatewayActivationEpoch()
   const query = useOfficeQuery(ctx, pollSeconds)
-  const entries = Array.isArray(query.data) ? query.data : []
+  const entries = useMemo(() => {
+    const enabled = enabledProfiles(query.data, excludedProfileIds)
+    return hideOffline ? enabled.filter((e) => e.online) : enabled
+  }, [query.data, excludedProfileIds, hideOffline])
   const stats = useMemo(() => summarize(entries), [entries])
 
   // Opt-in: toast when a profile changes state. Seeded from the first payload
   // so enabling the setting (or opening the app) never fires a burst.
   const seenRef = useRef(null)
   useEffect(() => {
-    if (!notifyOnChange) return
+    if (!notifyOnChange) { seenRef.current = null; return }
     const next = new Map()
     for (const e of entries) {
       if (e && e.profile) {
@@ -2201,7 +2247,7 @@ function OfficeStatusChip({ ctx, prefs }) {
   })
 }
 
-// Page overview always uses the full response, never the filtered scene/list.
+// Page overview uses enabled profiles, including offline ones.
 function profileOverview(entries) {
   const list = Array.isArray(entries) ? entries : []
   let working = 0, idle = 0, offline = 0
@@ -2213,10 +2259,10 @@ function profileOverview(entries) {
   return { total: list.length, working, idle, offline }
 }
 
-function officeView(entries, hideOffline, selectedProfile) {
-  const all = Array.isArray(entries) ? entries : []
+function officeView(entries, hideOffline, selectedProfile, excludedProfileIds) {
+  const all = enabledProfiles(entries, excludedProfileIds)
   const visible = hideOffline ? all.filter((e) => e.online) : all
-  // Keep details selected even if this profile is hidden from the scene/list.
+  // Offline-only filtering retains selection; explicitly disabled profiles do not.
   const selected = all.find((e) => e.profile === selectedProfile) || null
   return { all, visible, selected, selectedIndex: selected ? visible.indexOf(selected) : -1 }
 }
@@ -2241,7 +2287,7 @@ function OfficeOverview({ entries }) {
       }),
       jsx('p', {
         className: 'text-xs text-[var(--ui-text-tertiary)]',
-        children: 'All profiles · Working = online with recent session activity · Idle = online, not working · Offline = not online.',
+        children: 'Enabled profiles · Working = online with recent session activity · Idle = online, not working · Offline = not online.',
       }),
     ],
   })
@@ -2482,7 +2528,7 @@ function leaderValue(entry, metric) {
 }
 
 function OfficePage({ ctx, prefs }) {
-  const { pollSeconds, hideOffline } = useValue(prefs)
+  const { pollSeconds, hideOffline, excludedProfileIds = [] } = useValue(prefs)
   const [selectedProfile, setSelectedProfile] = useState(null)
   const epoch = useGatewayActivationEpoch()
   useEffect(() => { setSelectedProfile(null) }, [epoch])
@@ -2508,9 +2554,9 @@ function OfficePage({ ctx, prefs }) {
       description: String(query.error && query.error.message ? query.error.message : query.error || 'unknown error'),
     })
   } else {
-    const { all, visible: entries, selected: selectedEntry, selectedIndex } = officeView(query.data, hideOffline, selectedProfile)
+    const { all, visible: entries, selected: selectedEntry, selectedIndex } = officeView(query.data, hideOffline, selectedProfile, excludedProfileIds)
     const empty = all.length === 0
-      ? jsx(EmptyState, { title: 'No profiles found', description: 'The backend returned no profiles.' })
+      ? jsx(EmptyState, { title: 'No enabled profiles', description: 'Enable profiles in Office 3D Settings, or check the backend response.' })
       : entries.length === 0
         ? jsx(EmptyState, { title: 'Every profile is offline', description: 'Offline profiles are hidden. Turn off "Hide offline profiles" in Settings to see their desks and usage.' })
         : null
@@ -2540,7 +2586,7 @@ function OfficePage({ ctx, prefs }) {
                   : null,
                 selectedEntry
                   ? jsx(OfficeDetailPanel, { key: selectedEntry.profile, entry: selectedEntry, onClose: () => setSelectedProfile(null) })
-                  : selectedProfile
+                  : selectedProfile && !excludedProfileIds.includes(selectedProfile)
                     ? jsx('p', { className: 'text-xs text-[var(--ui-text-tertiary)]', children: 'The selected profile is no longer in the backend response.' })
                     : null,
                 jsx(OfficeLeaderboard, { entries, selectedProfile, onSelect: pick }),
@@ -2589,7 +2635,8 @@ export default {
     // and persisted with ctx.storage.
     const prefs = atom(readPrefs(ctx))
     const update = (patch) => {
-      const next = { ...prefs.get(), ...patch }
+      const current = prefs.get()
+      const next = { ...current, ...(typeof patch === 'function' ? patch(current) : patch) }
       prefs.set(next)
       try {
         ctx.storage.set(PREFS_KEY, next)
@@ -2648,7 +2695,7 @@ export default {
       title: 'Office 3D',
       icon: 'organization',
       order: 0,
-      render: () => jsx(OfficeSettingsPage, { prefs, update }),
+      render: () => jsx(OfficeSettingsPage, { ctx, prefs, update }),
     })
   },
 }
