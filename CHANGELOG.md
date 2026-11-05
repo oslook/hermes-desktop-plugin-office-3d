@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.1] - 2026-11-05
+
+### Fixed
+- **Ghost profiles in Office 3D and `office_status` (#1).** Both discovery paths
+  now exclude internal directories such as `profiles/.deleted/`, retired
+  directories without profile identity markers, invalid profile names, and
+  tombstoned profiles even when residual files remain. Valid offline profiles
+  remain listed; `default` appears once, followed by sorted named profiles.
+  Discovery stays scoped to the same `HERMES_HOME` used for status reads, using
+  Hermes identity helpers when available and compatible filtering on older releases.
+- Added regression coverage for both independently loaded discovery paths,
+  including canonical-helper and compatibility behavior, identity markers,
+  offline profiles, deletion markers, ordering, and directory scan errors.
+
 ## [1.4.0] - 2026-11-04
 
 ### Added

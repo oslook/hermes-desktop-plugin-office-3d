@@ -26,6 +26,8 @@ import glob
 import json
 import os
 import re
+from pathlib import Path
+import re
 import sqlite3
 import threading
 import time
@@ -53,21 +55,37 @@ _state_cache_lock = threading.Lock()
 _state_cache: Optional[Tuple[float, List[Dict[str, Any]]]] = None
 
 
-def _discover_profiles() -> List[str]:
-    """Discover profiles on THIS machine instead of hard-coding names.
+# Keep both independently loaded plugin halves aligned with Hermes discovery.
+# Older supported Hermes releases may not expose these helpers yet.
+try:
+    from hermes_constants import PROFILE_ID_RE, named_profile_is_live
+except ImportError:
+    PROFILE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 
-    'default' (the root home) is always first; named profiles are whatever
-    directories exist under <home>/profiles/, sorted. This makes the plugin
-    portable to any user's setup, not just the author's.
+    def named_profile_is_live(home: Path) -> bool:
+        markers = ("config.yaml", ".env", "SOUL.md", "profile.yaml", "auth.json", "state.db")
+        return (
+            home.is_dir()
+            and not (home.parent / ".deleted" / home.name).exists()
+            and any((home / marker).is_file() or (home / marker).is_symlink()
+                    for marker in markers)
+        )
+
+
+def _discover_profiles() -> List[str]:
+    """Default first, then valid, non-deleted profiles in this Hermes home.
+
+    Discovery is independent of gateway/session liveness: offline profiles
+    still own desks. Keep the scan scoped to the home used by the readers.
     """
     order = ["default"]
-    prof_dir = os.path.join(HERMES_HOME, "profiles")
     try:
-        names = sorted(
-            d for d in os.listdir(prof_dir)
-            if os.path.isdir(os.path.join(prof_dir, d))
-        )
-        order.extend(names)
+        order.extend(sorted(
+            entry.name for entry in (Path(HERMES_HOME) / "profiles").iterdir()
+            if entry.name != "default"
+            and PROFILE_ID_RE.fullmatch(entry.name)
+            and named_profile_is_live(entry)
+        ))
     except OSError:
         pass
     return order
