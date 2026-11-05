@@ -46,6 +46,8 @@ try:
 except ImportError as exc:
     raise RuntimeError("office-3d requires Hermes with resolve_gateway_liveness; please upgrade Hermes") from exc
 
+from hermes_cli.profiles import read_profile_meta
+
 HERMES_HOME = str(get_default_hermes_root())
 
 # How long a computed /state payload may be reused (seconds). Frontend polls
@@ -240,8 +242,12 @@ def _read_session_stats(profile: str) -> Dict[str, Any]:
 
 
 def _read_profile(profile: str) -> Dict[str, Any]:
+    # Bots stores its title in profile.yaml ui_meta; use Hermes' metadata reader
+    # so its mtime-based cache and missing/corrupt-file handling remain shared.
+    meta = read_profile_meta(Path(_state_path(profile)).parent)
     entry: Dict[str, Any] = {
         "profile": profile,
+        "display_name": meta.get("bot_title") or meta.get("display_name") or "",
         "active_agents": 0,
         "state": "offline",
         "updated_at": None,

@@ -13,6 +13,29 @@ import hermes_constants
 REPO = Path(__file__).resolve().parents[1]
 
 class FleetRootTest(unittest.TestCase):
+    def test_dashboard_bot_names_and_refresh(self):
+        with tempfile.TemporaryDirectory(prefix='office-names-', dir=os.environ['TMPDIR']) as tmp:
+            root = Path(tmp)
+            alpha = root / 'profiles' / 'alpha'
+            alpha.mkdir(parents=True)
+            (root / 'profile.yaml').write_text('display_name: Root Name\n', encoding='utf-8')
+            (alpha / 'profile.yaml').write_text('display_name: Person\nui_meta:\n  hermes-bots:\n    title: "  白銀結音  "\n', encoding='utf-8')
+            spec = importlib.util.spec_from_file_location('synthetic_names', REPO / 'dashboard/plugin_api.py')
+            assert spec is not None and spec.loader is not None
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            with patch.object(module, 'HERMES_HOME', str(root)), patch.object(module, 'resolve_gateway_liveness', return_value=types.SimpleNamespace(running=False, source=None)):
+                first = {e['profile']: e for e in module._collect_state()}
+                self.assertEqual(first['default']['display_name'], 'Root Name')
+                self.assertEqual(first['alpha']['display_name'], '白銀結音')
+                (alpha / 'profile.yaml').write_text('display_name: Renamed Person\n', encoding='utf-8')
+                self.assertEqual(module._collect_state()[1]['display_name'], '白銀結音')
+                setattr(module, '_state_cache', None)  # represents expiry of the normal two-second TTL
+                self.assertEqual(module._collect_state()[1]['display_name'], 'Renamed Person')
+                (alpha / 'profile.yaml').write_text('not: [valid', encoding='utf-8')
+                setattr(module, '_state_cache', None)
+                self.assertEqual(module._collect_state()[1]['display_name'], '')
+
     def test_missing_root_helper_fails_explicitly(self):
         for file in ['__init__.py', 'dashboard/plugin_api.py']:
             with self.subTest(file=file), patch.dict(sys.modules, {'hermes_constants': types.ModuleType('hermes_constants')}):

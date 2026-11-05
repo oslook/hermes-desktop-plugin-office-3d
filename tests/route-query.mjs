@@ -20,9 +20,22 @@ function moduleFor(exports) {
   return new SyntheticModule(Object.keys(exports), function () { for (const [k,v] of Object.entries(exports)) this.setExport(k,v) }, { context })
 }
 const source = await readFile(new URL('../desktop/plugin.js', import.meta.url), 'utf8')
-const mod = new SourceTextModule(source + '\nexport { OfficeStatusChip, OfficePage };', { context })
+const mod = new SourceTextModule(source + '\nexport { OfficeStatusChip, OfficePage, profileName, OfficeDetailPanel, OfficeLeaderboard };', { context })
 await mod.link(specifier => moduleFor(specifier === '@hermes/plugin-sdk' ? sdk : specifier === 'react' ? react : jsx))
 await mod.evaluate()
+assert.equal(mod.namespace.profileName({ profile: 'shirogane-yuine', display_name: ' 白銀結音 ' }), '白銀結音')
+assert.equal(mod.namespace.profileName({ profile: 'default' }), 'Hermes')
+assert.equal(mod.namespace.profileName({ profile: 'alpha_beta-test', display_name: ' ' }), 'Alpha Beta Test')
+const entry = { profile: 'shirogane-yuine', display_name: '白銀 結音' }
+let opened
+host.newChat = profile => { opened = profile }
+const detail = mod.namespace.OfficeDetailPanel({ entry, onClose: () => {} })
+assert.equal(detail.props.children[0].props.children[1].props.children, '白銀 結音')
+detail.props.children[6].props.children[0].props.onClick()
+assert.equal(opened, entry.profile, 'chat routing must keep the profile ID')
+const leaderboard = mod.namespace.OfficeLeaderboard({ entries: [entry], selectedProfile: entry.profile, onSelect: () => {} })
+assert.ok(JSON.stringify(leaderboard).includes('白銀 結音 (shirogane-yuine)'))
+assert.ok(JSON.stringify(leaderboard).includes('shirogane-yuine'))
 const prefs = { get: () => ({ pollSeconds: 5, hideOffline: false, notifyOnChange: false }) }
 let resolveRequest
 const ctx = { rest: () => new Promise(resolve => { resolveRequest = resolve }) }

@@ -122,6 +122,14 @@ function rgba(hex, a) {
   return 'rgba(' + rgb.r + ', ' + rgb.g + ', ' + rgb.b + ', ' + a + ')'
 }
 
+// Match the local Bots roster fallback while keeping profile IDs for routing.
+function profileName(entry) {
+  if (typeof entry.display_name === 'string' && entry.display_name.trim()) return entry.display_name.trim()
+  const id = entry.profile || ''
+  if (id.trim().toLowerCase() === 'default') return 'Hermes'
+  return id.replace(/[-_]+/g, ' ').trim().replace(/\b\w/g, ch => ch.toUpperCase())
+}
+
 // Darken a profile-hued name ink in LIGHT mode so it stays legible on the
 // near-white pill (P.pillColor). In DARK mode the raw profile color is
 // already legible on the dark pill, so pass it through unchanged.
@@ -1640,7 +1648,7 @@ function drawDeskAndAvatar(c, ox, oy, scale, slot, entry, index, tSec, palette) 
     const nameFontPx = 10
     c.font = nameFontPx + 'px system-ui, -apple-system, "Segoe UI", sans-serif'
     c.textAlign = 'center'
-    drawNameBadge(c, entry.profile, hx, hy - headR - 6, {
+    drawNameBadge(c, profileName(entry), hx, hy - headR - 6, {
       fontPx: nameFontPx,
       textColor: nameInk(pcolor, P),
       borderColor: P.pillBorder,
@@ -1664,7 +1672,7 @@ function drawDeskAndAvatar(c, ox, oy, scale, slot, entry, index, tSec, palette) 
     c.globalAlpha = 1
     c.font = deskNameFontPx + 'px system-ui, -apple-system, "Segoe UI", sans-serif'
     c.textAlign = 'center'
-    drawNameBadge(c, entry.profile, ox + dnx, oy + dny, {
+    drawNameBadge(c, profileName(entry), ox + dnx, oy + dny, {
       fontPx: deskNameFontPx,
       textColor: online ? nameInk(pcolor, P) : P.offlineNameColor,
       borderColor: P.pillBorder,
@@ -1745,7 +1753,7 @@ function drawLoungeAvatar(c, ox, oy, scale, slot, entry, index, tSec, idx, palet
   c.globalAlpha = 1
   c.font = nameFontPx + 'px system-ui, -apple-system, "Segoe UI", sans-serif'
   c.textAlign = 'center'
-  drawNameBadge(c, entry.profile, ox + nhx, nameY, {
+  drawNameBadge(c, profileName(entry), ox + nhx, nameY, {
     fontPx: nameFontPx,
     textColor: nameInk(pcolor, P),
     borderColor: P.pillBorder,
@@ -2160,7 +2168,7 @@ function OfficeStatusChip({ ctx, prefs }) {
         host.notify({
           kind: 'info',
           title: 'Office 3D',
-          message: profile + ' is now ' + state,
+          message: profileName(entries.find(e => e && e.profile === profile)) + ' is now ' + state,
           action: { label: 'Open office', onClick: () => host.navigate(OFFICE_PATH) },
         })
       }
@@ -2245,11 +2253,11 @@ function OfficeOverview({ entries }) {
 
 // Always-available door: a fresh chat draft in that profile (the app switches
 // the active backend for us).
-function openProfileChat(profile) {
+function openProfileChat(profile, label) {
   try {
     host.newChat(profile)
   } catch (err) {
-    host.notifyError(err, 'Could not open ' + profile + "'s chat")
+    host.notifyError(err, 'Could not open ' + label + "'s chat")
   }
 }
 
@@ -2346,7 +2354,7 @@ function OfficeDetailPanel({ entry, onClose }) {
           }),
           jsx('span', {
             className: 'min-w-0 max-w-full text-sm font-semibold text-[var(--ui-text-secondary)] truncate',
-            children: entry.profile,
+            children: profileName(entry),
           }),
           jsx('span', {
             className: 'text-xs text-[var(--ui-text-tertiary)]',
@@ -2375,7 +2383,7 @@ function OfficeDetailPanel({ entry, onClose }) {
       jsxs('div', {
         className: 'flex flex-wrap gap-2 pt-0.5',
         children: [
-          button('Open chat', () => openProfileChat(entry.profile), true),
+          button('Open chat', () => openProfileChat(entry.profile, profileName(entry)), true),
           sessionId
             ? button('Open latest session', () => openStoredSession(entry.profile, sessionId))
             : null,
@@ -2420,7 +2428,7 @@ function OfficeLeaderboard({ entries, selectedProfile, onSelect }) {
         }),
         jsx('span', {
           className: 'flex-1 min-w-0 truncate text-xs text-[var(--ui-text-secondary)]',
-          children: entry.profile,
+          children: profileName(entry) + ' (' + entry.profile + ')',
         }),
         jsx('span', {
           className: 'text-xs font-semibold tabular-nums text-[var(--ui-text-secondary)]',
@@ -2528,7 +2536,7 @@ function OfficePage({ ctx, prefs }) {
               className: 'min-w-0 w-full flex flex-col gap-2',
               children: [
                 selectedEntry && selectedIndex < 0
-                  ? jsx('p', { className: 'text-xs text-[var(--ui-text-tertiary)]', children: selectedEntry.profile + ' is hidden from the scene/list. Details remain selected.' })
+                  ? jsx('p', { className: 'text-xs text-[var(--ui-text-tertiary)]', children: profileName(selectedEntry) + ' is hidden from the scene/list. Details remain selected.' })
                   : null,
                 selectedEntry
                   ? jsx(OfficeDetailPanel, { key: selectedEntry.profile, entry: selectedEntry, onClose: () => setSelectedProfile(null) })
