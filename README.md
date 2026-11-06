@@ -41,7 +41,7 @@ exist. Each entry carries a `delegated_sessions` counter.
   malformed JSON.
 
 - Follows the Hermes light/dark theme automatically.
-- Bottom stat chips: **online / busy / active sessions / tokens / agents / cost** aggregated across every profile.
+- The overview counts enabled profiles, including offline ones even when offline desks are hidden.
 - Backend reads only aggregate columns (COUNT/SUM/MAX) from each profile's `state.db` — never message contents.
 
 ## Beyond the page
@@ -60,7 +60,14 @@ exist. Each entry carries a `delegated_sessions` counter.
   offline with aggregate session / token / cost totals, so the model can answer "who is
   working right now?" without the Desktop app. Same privacy boundary as the backend.
 - **Settings ▸ Plugins ▸ Office 3D** — refresh interval (2s / 5s / 15s / 60s), hide offline
-  profiles, and opt-in desktop notifications when a profile changes state.
+  profiles, choose visible profiles (including `default`), and opt in to state-change notifications.
+  All profiles, including newly discovered ones, are enabled by default. The profile switches
+  remain available for offline profiles and persist in Desktop's plugin storage, shared across
+  profiles in that client. They affect only this UI, not gateways or the `office_status` tool.
+  Disabled profiles are excluded from the office, details, overview, status chip and notifications.
+  The status chip and notifications also apply the hide-offline filter; newly visible profiles
+  seed notification state rather than triggering a toast. The overview still counts enabled
+  offline profiles, even when their desks are hidden.
 
 ## Built with
 
@@ -89,11 +96,11 @@ When the folder lands in a `plugins/` root, the Desktop app copies `desktop/plug
 ## How it works
 
 1. **Desktop half** — `desktop/plugin.js` — a single ESM file the desktop app loads at runtime (canvas 2D isometric scene; no build step).
-2. **Backend half** — `dashboard/plugin_api.py` + `manifest.json` — a FastAPI router mounted at `/api/plugins/office-3d/state` by the dashboard web server. It scans each profile's `gateway_state.json` (process liveness) and `state.db` (session activity + token/cost aggregates).
+2. **Backend half** — `dashboard/plugin_api.py` + `manifest.json` — a FastAPI router mounted at `/api/plugins/office-3d/state` by the dashboard web server. It uses Hermes gateway liveness resolution, including multiplexed profiles, and reads `gateway_state.json` and `state.db` for status and session activity + token/cost aggregates. Recent active sessions also mark a profile online.
 3. **Enable flag** — `office-3d` must be listed in `plugins.enabled` in your `config.yaml` before the backend is imported (security gate). `hermes plugins enable office-3d` writes it.
 4. **Agent half** — `__init__.py` registers one read-only tool, `office_status`, which scans the same two sources directly from the gateway process (no HTTP, no credentials).
 
-The plugin is portable: `HERMES_HOME` honours `$HERMES_HOME` (falls back to `~/.hermes`), and profiles are discovered by scanning `~/.hermes/profiles/` — no names are hard-coded.
+The plugin uses Hermes's `get_default_hermes_root()` to find the fleet root, including custom roots and named-profile processes; profile names are discovered under that root. The Python halves require a Hermes build providing that helper (the existing `>=0.20.0` manifest constraint alone does not guarantee it); they fail explicitly if it is unavailable. The desktop half requires the SDK's `host.state.connectionId`, `gatewayActivationEpoch` and `useGatewayActivationEpoch` APIs. Switching profiles does not enable the backend: each serving profile must independently authorize the plugin, otherwise requests can return 404.
 
 ## Install
 
@@ -134,7 +141,7 @@ Then make it take effect:
 
 - Hermes Desktop **0.20.0+** — the desktop app is required; the CLI/gateway alone does not load desktop plugins. (Developed on 0.20.0.)
 - The dashboard web server running (it serves `/api/plugins/...`).
-- **Linux or macOS.** Windows is not supported: the backend judges profile liveness with `os.kill(pid, 0)`, and on Windows every signal other than `CTRL_C_EVENT`/`CTRL_BREAK_EVENT` is routed through `TerminateProcess`, which would *kill* the target process (the gateway). The manifest declares `platforms: [linux, macos]` accordingly.
+- **Linux or macOS.** Windows support has not been validated; the manifest declares `platforms: [linux, macos]`.
 
 ## Uninstall
 

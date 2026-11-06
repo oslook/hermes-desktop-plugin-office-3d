@@ -13,6 +13,9 @@ MARKERS = ('config.yaml', '.env', 'SOUL.md', 'profile.yaml', 'auth.json', 'state
 def load(path, core):
     spec = importlib.util.spec_from_file_location('office_test_' + path.stem, path)
     module = importlib.util.module_from_spec(spec)
+    if core is None:
+        core = types.ModuleType('hermes_constants')
+    core.get_default_hermes_root = lambda: Path(tempfile.gettempdir())
     with patch.dict(sys.modules, {'hermes_constants': core}):
         spec.loader.exec_module(module)
     return module
@@ -56,7 +59,8 @@ class DiscoveryTests(unittest.TestCase):
                         expected = ['default'] + sorted(expected[1:] + ['linked'])
                         (profiles / 'file-only').touch()
                         self.assertEqual(module._discover_profiles(), expected)
-                        entries = module.collect() if hasattr(module, 'collect') else module._collect_state()
+                        with patch.object(module, 'resolve_gateway_liveness', return_value=types.SimpleNamespace(running=False, source='none')):
+                            entries = module.collect() if hasattr(module, 'collect') else module._collect_state()
                         self.assertEqual([e['profile'] for e in entries], expected)
                         self.assertTrue(all(e['state'] == 'offline' for e in entries))
                         self.assertTrue((profiles / '.deleted' / 'gone').exists())

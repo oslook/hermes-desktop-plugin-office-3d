@@ -59,7 +59,7 @@ docs/                       # 截图
 ## 工作原理
 
 1. **桌面半边** — `desktop/plugin.js` — 桌面 app 运行时加载的单个 ESM 文件（canvas 2D 等距场景，无需编译）。
-2. **后端半边** — `dashboard/plugin_api.py` + `manifest.json` — 一个 FastAPI 路由，由 dashboard web 服务挂载到 `/api/plugins/office-3d/state`。它扫描每个 profile 的 `gateway_state.json`（进程存活）和 `state.db`（会话活动 + token/成本聚合）。
+2. **后端半边** — `dashboard/plugin_api.py` + `manifest.json` — 一个 FastAPI 路由，由 dashboard web 服务挂载到 `/api/plugins/office-3d/state`。它使用 Hermes gateway 存活判定（包括复用 gateway 的 profile），读取 `gateway_state.json` 和 `state.db` 获取状态及会话活动、token/成本聚合。近期活跃会话也会使 profile 显示在线。
 3. **启用开关** — 后端被 import 前，`office-3d` 必须出现在 `config.yaml` 的 `plugins.enabled` 里（安全门）。用 `hermes plugins enable office-3d` 写入。
 4. **agent 半边** — `__init__.py` 注册一个只读工具 `office_status`，在 gateway 进程里直接扫描同样的两个数据源（不走 HTTP、不需要凭据）。
 
@@ -104,7 +104,7 @@ bash install.sh
 
 - Hermes Desktop **0.20.0+** —— 必须有桌面 app；只有 CLI/gateway 不会加载桌面插件。（在 0.20.0 上开发。）
 - dashboard web 服务在运行（它才提供 `/api/plugins/...`）。
-- **仅支持 Linux / macOS。** 不支持 Windows：后端用 `os.kill(pid, 0)` 判断 profile 进程是否存活，而在 Windows 上除 `CTRL_C_EVENT`/`CTRL_BREAK_EVENT` 外的任何信号都会走 `TerminateProcess`，会**直接杀掉**目标进程（即 gateway）。清单里因此声明了 `platforms: [linux, macos]`。
+- **仅支持 Linux / macOS。** Windows 支持尚未验证；清单声明了 `platforms: [linux, macos]`。
 
 ## 卸载
 
