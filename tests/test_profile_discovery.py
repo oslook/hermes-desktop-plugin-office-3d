@@ -54,9 +54,20 @@ class DiscoveryTests(unittest.TestCase):
                             (profiles / name).mkdir()
                             (profiles / name / marker).touch()
                             expected.append(name)
-                        (profiles / 'linked').mkdir()
-                        (profiles / 'linked' / 'config.yaml').symlink_to('missing')
-                        expected = ['default'] + sorted(expected[1:] + ['linked'])
+                        # A marker that is a dangling symlink still marks a live
+                        # profile. Creating the link needs
+                        # SeCreateSymbolicLinkPrivilege on Windows (developer mode
+                        # or admin), so where the OS refuses, drop this sub-case
+                        # instead of failing the suite; the empty dir then has no
+                        # marker and must not be discovered.
+                        linked = []
+                        try:
+                            (profiles / 'linked').mkdir()
+                            (profiles / 'linked' / 'config.yaml').symlink_to('missing')
+                            linked = ['linked']
+                        except (OSError, NotImplementedError):
+                            pass
+                        expected = ['default'] + sorted(expected[1:] + linked)
                         (profiles / 'file-only').touch()
                         self.assertEqual(module._discover_profiles(), expected)
                         with patch.object(module, 'resolve_gateway_liveness', return_value=types.SimpleNamespace(running=False, source='none')):

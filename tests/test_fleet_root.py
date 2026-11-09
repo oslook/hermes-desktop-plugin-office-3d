@@ -1,4 +1,5 @@
 """Synthetic fleet regression: no real profile or message data is accessed."""
+import contextlib
 import importlib.util
 import os
 from pathlib import Path
@@ -12,9 +13,13 @@ import hermes_constants
 
 REPO = Path(__file__).resolve().parents[1]
 
+# `TMPDIR` only exists on POSIX shells; Windows puts its temp root elsewhere.
+TEMP_ROOT = tempfile.gettempdir()
+
+
 class FleetRootTest(unittest.TestCase):
     def test_dashboard_bot_names_and_refresh(self):
-        with tempfile.TemporaryDirectory(prefix='office-names-', dir=os.environ['TMPDIR']) as tmp:
+        with tempfile.TemporaryDirectory(prefix='office-names-', dir=TEMP_ROOT) as tmp:
             root = Path(tmp)
             alpha = root / 'profiles' / 'alpha'
             alpha.mkdir(parents=True)
@@ -46,14 +51,18 @@ class FleetRootTest(unittest.TestCase):
                     spec.loader.exec_module(module)
 
     def test_default_named_and_custom_root(self):
-        with tempfile.TemporaryDirectory(prefix='office-fleet-', dir=os.environ['TMPDIR']) as tmp:
+        with tempfile.TemporaryDirectory(prefix='office-fleet-', dir=TEMP_ROOT) as tmp:
             root = Path(tmp) / 'custom-hermes'
             for name, count in [('default', 1), ('alpha', 2), ('beta', 3)]:
                 home = root if name == 'default' else root / 'profiles' / name
                 home.mkdir(parents=True, exist_ok=True)
-                with sqlite3.connect(home / 'state.db') as db:
+                # `with sqlite3.connect(...)` commits but does NOT close, and an
+                # open handle blocks TemporaryDirectory cleanup on Windows
+                # (WinError 32). closing() releases it before teardown.
+                with contextlib.closing(sqlite3.connect(home / 'state.db')) as db:
                     db.execute('CREATE TABLE sessions(last_activity_at REAL, ended_at REAL, input_tokens INTEGER, output_tokens INTEGER, actual_cost_usd REAL, estimated_cost_usd REAL)')
                     db.executemany('INSERT INTO sessions VALUES (0, 1, 10, 1, 0, 0)', [()] * count)
+                    db.commit()
             for runtime_home in [None, root, root / 'profiles' / 'alpha', root / 'profiles' / 'beta']:
                 for file in ['__init__.py', 'dashboard/plugin_api.py']:
                     environment = {'HERMES_HOME': str(runtime_home)} if runtime_home else {}

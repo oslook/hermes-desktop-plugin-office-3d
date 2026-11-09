@@ -1,4 +1,5 @@
 """Exercise both readers against Hermes' real liveness ladder in a synthetic fleet."""
+import contextlib
 import importlib.util
 import json
 import os
@@ -18,10 +19,13 @@ import hermes_constants
 
 REPO = Path(__file__).resolve().parents[1]
 
+# `TMPDIR` only exists on POSIX shells; Windows puts its temp root elsewhere.
+TEMP_ROOT = tempfile.gettempdir()
+
 
 class GatewayLivenessTest(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory(dir=os.environ['TMPDIR'])
+        self.tmp = tempfile.TemporaryDirectory(dir=TEMP_ROOT)
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name) / 'fleet'
         self.root.mkdir()
@@ -111,9 +115,12 @@ class GatewayLivenessTest(unittest.TestCase):
 
     def test_activity_still_marks_independent_worker_busy(self):
         home = self.home('worker')
-        with sqlite3.connect(home / 'state.db') as db:
+        # closing() — a `with sqlite3.connect(...)` block commits but leaves the
+        # handle open, which blocks temp cleanup on Windows (WinError 32).
+        with contextlib.closing(sqlite3.connect(home / 'state.db')) as db:
             db.execute('CREATE TABLE sessions(last_activity_at REAL, ended_at REAL, input_tokens INTEGER, output_tokens INTEGER, actual_cost_usd REAL, estimated_cost_usd REAL)')
             db.execute('INSERT INTO sessions VALUES (?, NULL, 1, 2, NULL, 0)', (time.time(),))
+            db.commit()
         with patch.object(status, 'multiplexer_liveness_for_profile', return_value=None):
             for module in self.modules:
                 with self.subTest(backend=module.__name__):
@@ -126,11 +133,12 @@ class GatewayLivenessTest(unittest.TestCase):
         (worker / 'gateway_state.json').write_text(json.dumps({'gateway_state': 'stopped'}))
         ghost = self.home('ghost')
         (ghost / 'runtime').mkdir()
-        with sqlite3.connect(self.root / 'state.db') as db:
+        with contextlib.closing(sqlite3.connect(self.root / 'state.db')) as db:
             db.execute('CREATE TABLE sessions(source TEXT, last_activity_at REAL, ended_at REAL, input_tokens INTEGER, output_tokens INTEGER, actual_cost_usd REAL, estimated_cost_usd REAL)')
             db.execute('INSERT INTO sessions VALUES (?, ?, NULL, 1, 2, NULL, 0)', ('subagent', time.time()))
             db.execute('CREATE TABLE async_delegations(state TEXT, task_json TEXT)')
             db.execute('INSERT INTO async_delegations VALUES (?, ?)', ('running', json.dumps({'profile': 'worker'})))
+            db.commit()
         for module in self.modules:
             for source, running in [('multiplexer', True), ('none', False)]:
                 with self.subTest(backend=module.__name__, source=source), \
