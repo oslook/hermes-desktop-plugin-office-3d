@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.2] - 2026-11-09
+
+### Added
+- **Windows support.** `platforms` now includes `windows`. The POSIX-only code
+  path was the PID liveness probe, which refused to run on Windows because
+  `os.kill(pid, 0)` is routed through `TerminateProcess` there. It is replaced by
+  a `ctypes` `OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION)` +
+  `GetExitCodeProcess` probe that never signals the target, applied in both the
+  agent half (`__init__.py`) and the dashboard half (`dashboard/plugin_api.py`).
+  `ERROR_ACCESS_DENIED` counts as alive (process exists, not ours).
+  Verified on Windows 11 / CPython 3.11: manifest validation, plugin doctor, the
+  `office_status` tool and the isometric page. Details and measurements in
+  `WINDOWS.md`.
+
 ## [1.4.1] - 2026-11-05
 
 ### Fixed
