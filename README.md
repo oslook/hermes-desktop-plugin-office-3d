@@ -141,7 +141,7 @@ Then make it take effect:
 
 - Hermes Desktop **0.20.0+** — the desktop app is required; the CLI/gateway alone does not load desktop plugins. (Developed on 0.20.0.)
 - The dashboard web server running (it serves `/api/plugins/...`).
-- **Linux or macOS.** Windows support has not been validated; the manifest declares `platforms: [linux, macos]`.
+- **Linux, macOS or Windows.** The only platform-specific code was the PID liveness probe: `os.kill(pid, 0)` is routed through `TerminateProcess` on Windows, so the check refused to run there. It now uses `OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION)` + `GetExitCodeProcess` via `ctypes`, which never signals the target — see [`WINDOWS.md`](./WINDOWS.md) for what was measured.
 
 ## Uninstall
 

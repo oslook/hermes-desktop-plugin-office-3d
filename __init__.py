@@ -104,20 +104,48 @@ def _discover_profiles() -> List[str]:
     return order
 
 
-def _pid_alive(pid: Any) -> bool:
-    """True when ``pid`` is a live process.
+def _windows_pid_alive(pid: int) -> bool:
+    """Windows-safe liveness probe: never signals the target process.
 
-    os.kill(pid, 0): success or PermissionError means the process exists;
-    ProcessLookupError means it does not. On Windows every signal other than
-    CTRL_C_EVENT/CTRL_BREAK_EVENT is routed through TerminateProcess, so
-    os.kill(pid, 0) would KILL the target — the manifest declares
-    ``platforms: [linux, macos]`` and this refuses the check rather than risk
-    killing a live gateway.
+    ``os.kill(pid, 0)`` on Windows is routed through ``TerminateProcess`` and
+    would KILL the gateway, so the probe goes through ``OpenProcess`` +
+    ``GetExitCodeProcess`` (the same technique Hermes' own
+    ``pid_exists_stdlib`` uses, kept local so this plugin imports no private
+    core module). Fork patch v1.4.2-win.1.
+    """
+    try:
+        import ctypes
+        from ctypes import wintypes
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        STILL_ACTIVE = 259
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+        if not handle:
+            # ERROR_ACCESS_DENIED (5) means the process exists but is not ours.
+            return ctypes.get_last_error() == 5
+        try:
+            code = wintypes.DWORD()
+            if not kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
+                return False
+            return code.value == STILL_ACTIVE
+        finally:
+            kernel32.CloseHandle(handle)
+    except Exception:
+        return False
+
+
+def _pid_alive(pid: Any) -> bool:
+    """True when ``pid`` is a live process, without ever signalling it.
+
+    POSIX: os.kill(pid, 0) — success or PermissionError means the process
+    exists; ProcessLookupError means it does not.
+    Windows (fork patch v1.4.2-win.1): os.kill(pid, 0) would KILL the target, so
+    the ctypes-backed probe above is used instead of refusing the check.
     """
     if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
         return False
     if os.name == "nt":
-        return False
+        return _windows_pid_alive(pid)
     try:
         os.kill(pid, 0)
         return True
