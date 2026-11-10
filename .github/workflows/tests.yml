@@ -25,6 +25,11 @@ jobs:
         with:
           python-version: '3.11'
 
+      - name: Install the dashboard half's only third-party import
+        # dashboard/plugin_api.py imports fastapi for its APIRouter; everything
+        # else it touches is stdlib or Hermes core (stubbed / skipped).
+        run: python -m pip install --quiet 'fastapi>=0.110'
+
       - name: Run the unittest suites
         run: |
           set -e
