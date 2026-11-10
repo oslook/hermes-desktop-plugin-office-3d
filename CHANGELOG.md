@@ -5,9 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.4.2] - 2026-11-09
+## [1.4.2] - 2026-11-10
 
 ### Added
+- **Fleet profiles and visibility settings.** Profile discovery resolves the
+  shared fleet root via Hermes rather than treating a named profile's directory
+  as the root, so a profile-serving process shows the whole fleet and custom
+  `HERMES_HOME` roots are honoured. Desks show display names (profile
+  `display_name` / bot titles) alongside the profile ID. Settings ▸ Plugins ▸
+  Office 3D now has per-profile switches, `default` included; all profiles are
+  enabled by default, switches persist in Desktop's plugin storage, and disabled
+  profiles are excluded from the scene, details, overview, status chip and
+  notifications without affecting gateways or `office_status`.
+- **Multiplexed gateway liveness.** Online detection uses Hermes gateway
+  liveness resolution, so profiles served by a multiplexed host are online,
+  while stopped records and recycled PIDs stay offline. Recent session activity
+  also marks a profile online, and cached/in-flight state is fenced across
+  gateway activations so another profile's data cannot leak in after a switch.
 - **Windows support.** `platforms` now includes `windows`. The POSIX-only code
   path was the PID liveness probe, which refused to run on Windows because
   `os.kill(pid, 0)` is routed through `TerminateProcess` there. It is replaced by
