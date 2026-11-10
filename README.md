@@ -143,6 +143,12 @@ Then make it take effect:
 - The dashboard web server running (it serves `/api/plugins/...`).
 - **Linux, macOS or Windows.** The only platform-specific code was the PID liveness probe: `os.kill(pid, 0)` is routed through `TerminateProcess` on Windows, so the check refused to run there. It now uses `OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION)` + `GetExitCodeProcess` via `ctypes`, which never signals the target — see [`WINDOWS.md`](./WINDOWS.md) for what was measured.
 
+## Releasing
+
+Version bumps, annotated tags, GitHub releases and the one-file re-pin PR against the official
+[`plugin-catalog/office-3d.yaml`](https://github.com/NousResearch/hermes-agent/blob/main/plugin-catalog/office-3d.yaml)
+are documented in [`RELEASING.md`](./RELEASING.md).
+
 ## Uninstall
 
 ```bash

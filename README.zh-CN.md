@@ -104,7 +104,13 @@ bash install.sh
 
 - Hermes Desktop **0.20.0+** —— 必须有桌面 app；只有 CLI/gateway 不会加载桌面插件。（在 0.20.0 上开发。）
 - dashboard web 服务在运行（它才提供 `/api/plugins/...`）。
-- **仅支持 Linux / macOS。** Windows 支持尚未验证；清单声明了 `platforms: [linux, macos]`。
+- **Linux / macOS / Windows。** 唯一平台相关代码是 PID 存活探测：`os.kill(pid, 0)` 在 Windows 上会走 `TerminateProcess`，因此改用 `ctypes` 的 `OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION)` + `GetExitCodeProcess`，不会向目标进程发信号——实测见 [`WINDOWS.md`](./WINDOWS.md)。
+
+## 发布
+
+版本号、tag、GitHub Release，以及官方插件目录
+[`plugin-catalog/office-3d.yaml`](https://github.com/NousResearch/hermes-agent/blob/main/plugin-catalog/office-3d.yaml)
+的重新固定流程见 [`RELEASING.md`](./RELEASING.md)。
 
 ## 卸载
 
