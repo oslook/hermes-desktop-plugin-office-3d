@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.3] - 2026-11-10
+
+### Fixed
+- **Compatibility metadata matches the catalog.** `requires_hermes` is now
+  `>=0.21.4`, the floor the catalog entry has enforced since 1.3.0, instead of
+  `>=0.20.0`. Hermes releases below the floor skip the plugin at load rather
+  than importing a half that needs `get_default_hermes_root()` /
+  `resolve_gateway_liveness` and failing at import. No runtime behaviour
+  changes on a supported Hermes.
+
+### Catalog
+- Re-pinned the catalog entry to this release: full-SHA pin, `version: "1.4.3"`,
+  `platforms: [linux, macos, windows]`, matching `requires_hermes`, and
+  banner/screenshot URLs re-pointed at the new pin.
+
 ## [1.4.2] - 2026-11-10
 
 ### Added

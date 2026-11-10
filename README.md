@@ -100,7 +100,7 @@ When the folder lands in a `plugins/` root, the Desktop app copies `desktop/plug
 3. **Enable flag** — `office-3d` must be listed in `plugins.enabled` in your `config.yaml` before the backend is imported (security gate). `hermes plugins enable office-3d` writes it.
 4. **Agent half** — `__init__.py` registers one read-only tool, `office_status`, which scans the same two sources directly from the gateway process (no HTTP, no credentials).
 
-The plugin uses Hermes's `get_default_hermes_root()` to find the fleet root, including custom roots and named-profile processes; profile names are discovered under that root. The Python halves require a Hermes build providing that helper (the existing `>=0.20.0` manifest constraint alone does not guarantee it); they fail explicitly if it is unavailable. The desktop half requires the SDK's `host.state.connectionId`, `gatewayActivationEpoch` and `useGatewayActivationEpoch` APIs. Switching profiles does not enable the backend: each serving profile must independently authorize the plugin, otherwise requests can return 404.
+The plugin uses Hermes's `get_default_hermes_root()` to find the fleet root, including custom roots and named-profile processes; profile names are discovered under that root. The Python halves require a Hermes build providing that helper, which is why `requires_hermes` is `>=0.21.4` (the same floor the catalog entry enforces); they fail explicitly if it is unavailable. The desktop half requires the SDK's `host.state.connectionId`, `gatewayActivationEpoch` and `useGatewayActivationEpoch` APIs. Switching profiles does not enable the backend: each serving profile must independently authorize the plugin, otherwise requests can return 404.
 
 ## Install
 
@@ -139,7 +139,7 @@ Then make it take effect:
 
 ## Requirements
 
-- Hermes Desktop **0.20.0+** — the desktop app is required; the CLI/gateway alone does not load desktop plugins. (Developed on 0.20.0.)
+- Hermes Desktop **0.21.4+** — the desktop app is required; the CLI/gateway alone does not load desktop plugins.
 - The dashboard web server running (it serves `/api/plugins/...`).
 - **Linux, macOS or Windows.** The only platform-specific code was the PID liveness probe: `os.kill(pid, 0)` is routed through `TerminateProcess` on Windows, so the check refused to run there. It now uses `OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION)` + `GetExitCodeProcess` via `ctypes`, which never signals the target — see [`WINDOWS.md`](./WINDOWS.md) for what was measured.
 
