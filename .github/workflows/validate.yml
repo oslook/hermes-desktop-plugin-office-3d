@@ -16,7 +16,7 @@ jobs:
   validate:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Validate with the catalog CI gate
         uses: NousResearch/hermes-agent/.github/actions/plugin-validate@main
