@@ -3,10 +3,16 @@
 from pathlib import Path
 import importlib.util, sqlite3, tempfile, time, json, os, sys
 from unittest.mock import patch
-import hermes_constants
+try:  # Needs a Hermes checkout for the plugin's core imports.
+    import hermes_constants
+    import gateway.status  # noqa: F401
+except ImportError:
+    print('SKIP layout-backend-semantics: needs a Hermes checkout')
+    raise SystemExit(0)
 repo=Path(__file__).resolve().parents[1]
 backend=Path(sys.argv[1]) if len(sys.argv)>1 else repo/'dashboard/plugin_api.py'
-with tempfile.TemporaryDirectory(prefix='office-layout-sql-',dir=os.environ['TMPDIR']) as home:
+# `TMPDIR` is POSIX-shell only; gettempdir() works on Windows and bare CI too.
+with tempfile.TemporaryDirectory(prefix='office-layout-sql-',dir=tempfile.gettempdir()) as home:
     db=sqlite3.connect(str(Path(home)/'state.db'))
     db.execute('CREATE TABLE sessions(last_activity_at REAL, ended_at REAL, input_tokens INTEGER, output_tokens INTEGER, actual_cost_usd REAL, estimated_cost_usd REAL)')
     now=time.time()

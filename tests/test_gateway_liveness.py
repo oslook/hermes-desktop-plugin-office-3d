@@ -12,10 +12,15 @@ import sys
 import types
 from unittest.mock import patch
 
-import gateway.status as status
-import gateway.host_topology as host_topology
-import hermes_cli.gateway as cli_gateway
-import hermes_constants
+try:  # Exercises Hermes' real liveness ladder, so it needs a checkout.
+    import gateway.status as status
+    import gateway.host_topology as host_topology
+    import hermes_cli.gateway as cli_gateway
+    import hermes_constants
+    HERMES_AVAILABLE = True
+except ImportError:  # pragma: no cover - bare clone / CI without Hermes
+    status = host_topology = cli_gateway = hermes_constants = None  # noqa: F841
+    HERMES_AVAILABLE = False
 
 REPO = Path(__file__).resolve().parents[1]
 
@@ -23,6 +28,7 @@ REPO = Path(__file__).resolve().parents[1]
 TEMP_ROOT = tempfile.gettempdir()
 
 
+@unittest.skipUnless(HERMES_AVAILABLE, 'needs a Hermes checkout')
 class GatewayLivenessTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(dir=TEMP_ROOT)

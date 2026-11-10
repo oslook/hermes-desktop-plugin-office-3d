@@ -47,9 +47,97 @@ try:
 except ImportError as exc:
     raise RuntimeError("office-3d requires Hermes with resolve_gateway_liveness; please upgrade Hermes") from exc
 
-from hermes_cli.profiles import read_profile_meta
+# Display names live in each profile's own ``profile.yaml``. Read that file
+# directly instead of importing ``hermes_cli.profiles.read_profile_meta``: the
+# core module is private surface (plugin-catalog rule 9) and its signature can
+# move between Hermes releases. PyYAML is used when importable; a small stdlib
+# scanner covers the two keys we need otherwise. Every failure is swallowed, so
+# one corrupt file can never break the office.
 
 HERMES_HOME = str(get_default_hermes_root())
+
+_display_name_lock = threading.Lock()
+# profile.yaml path -> (mtime_ns, display name)
+_display_name_cache: Dict[str, Tuple[int, str]] = {}
+
+
+def _yaml_scalar(value: str) -> str:
+    """Unquote a scalar YAML value as far as display names need it."""
+    text = value.strip()
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in "'\"":
+        text = text[1:-1]
+    return text.strip()
+
+
+def _scan_display_name(text: str) -> str:
+    """Stdlib fallback: pull ``display_name`` and ``ui_meta.hermes-bots.title``."""
+    display = ""
+    in_ui = False
+    in_bots = False
+    for raw in text.splitlines():
+        line = raw.split("#", 1)[0].rstrip()
+        if not line.strip():
+            continue
+        indent = len(line) - len(line.lstrip(" "))
+        body = line.strip()
+        if indent == 0:
+            in_ui = in_bots = False
+            if body.startswith("display_name:"):
+                display = _yaml_scalar(body.split(":", 1)[1]) or display
+            elif body.startswith("ui_meta:"):
+                in_ui = True
+            continue
+        if in_ui and not in_bots and body.startswith("hermes-bots:"):
+            in_bots = True
+            continue
+        if in_bots and body.startswith("title:"):
+            title = _yaml_scalar(body.split(":", 1)[1])
+            if title:
+                return title
+    return display
+
+
+def _parse_display_name(text: str) -> str:
+    """Bot title first, then display_name — same preference read_profile_meta had."""
+    try:
+        import yaml  # noqa: PLC0415 — optional dependency, fallback below
+    except Exception:
+        return _scan_display_name(text)
+    try:
+        data = yaml.safe_load(text)
+    except Exception:
+        return _scan_display_name(text)
+    if not isinstance(data, dict):
+        return _scan_display_name(text)
+    title = ""
+    ui_meta = data.get("ui_meta")
+    if isinstance(ui_meta, dict):
+        bots = ui_meta.get("hermes-bots")
+        if isinstance(bots, dict):
+            title = str(bots.get("title") or "").strip()
+    return title or str(data.get("display_name") or "").strip()
+
+
+def _read_display_name(profile_dir) -> str:
+    """Cached per-file (mtime-keyed) display name for one profile directory."""
+    path = Path(profile_dir) / "profile.yaml"
+    try:
+        mtime = path.stat().st_mtime_ns
+    except OSError:
+        return ""
+    key = str(path)
+    with _display_name_lock:
+        cached = _display_name_cache.get(key)
+        if cached is not None and cached[0] == mtime:
+            return cached[1]
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        text = ""
+    name = _parse_display_name(text) if text else ""
+    with _display_name_lock:
+        _display_name_cache[key] = (mtime, name)
+    return name
 
 # How long a computed /state payload may be reused (seconds). Frontend polls
 # every 5s; a 2s TTL collapses bursts without making the UI feel stale.
@@ -388,11 +476,11 @@ def _read_profile(
     delegation_routes: Optional[Dict[str, int]] = None,
     live_subagents: Optional[int] = None,
 ) -> Dict[str, Any]:
-    # Share Bots' metadata reader, including its cache and error handling.
-    meta = read_profile_meta(Path(_state_path(profile)).parent)
+    # The profile's own profile.yaml carries the Bot title / display name.
+    display_name = _read_display_name(Path(_state_path(profile)).parent)
     entry: Dict[str, Any] = {
         "profile": profile,
-        "display_name": meta.get("bot_title") or meta.get("display_name") or "",
+        "display_name": display_name,
         "active_agents": 0,
         "delegated_sessions": 0,
         "state": "offline",

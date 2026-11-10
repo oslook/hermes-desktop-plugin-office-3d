@@ -5,6 +5,39 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **Display names no longer import a private core module.** The dashboard half read
+  `display_name` / `ui_meta.hermes-bots.title` through `hermes_cli.profiles.read_profile_meta`,
+  which the catalog flags as private surface (rule 9) and which can move between Hermes
+  releases. It now parses each profile's own `profile.yaml` (PyYAML when importable, a
+  small stdlib scanner otherwise), keyed by file mtime and never raising on a corrupt
+  file. `hermes plugins validate` is warning-free again.
+- **The test suite is green from a bare clone.** `test_profile_discovery` stubs
+  `gateway.status` instead of relying on a Hermes checkout, the Hermes-dependent suites
+  skip themselves when the core is absent, `layout-backend-semantics` no longer needs
+  `TMPDIR` in the environment, and `wheel-browser` waits for the zoom readout to reach
+  the expected value instead of sleeping a fixed 30 ms (React commits a frame or two
+  after the DOM event, so the old timing failed on a loaded machine even though the
+  zoom had landed).
+
+### Added
+- **`test_display_name.py`**: bot-title precedence, `display_name` fallback, missing and
+  corrupt `profile.yaml`, mtime-keyed cache refresh, and a guard that keeps the private
+  core import from coming back.
+- **`.github/workflows/tests.yml`**: runs the unittest suites on a bare clone and the real
+  Chromium canvas regressions (`layout-browser`, `wheel-browser`, `canvas-browser`) that
+  `validate.yml` never exercised.
+- **`tests/canvas-browser.mjs` runs from the repo again.** It used to hardcode
+  `verification/...` paths that only exist in a built release bundle, so it 404'd and
+  covered nothing. It now builds every bundle from the repo's own builders
+  (`layout-preview.mjs`, `sofa-preview.py`), serves it, and reports each page's verdict:
+  `layout` and `sofa` as hard gates, the `pose` page opt-in via `--pose-baseline=<file>`
+  because its pre-fix baseline blob never existed in git (that page needs furniture
+  byte-identical to today *and* the old sphere head, which no commit satisfies).
+  `sofa-preview.py` now takes an output directory so the runner can build into scratch.
+
 ## [1.4.3] - 2026-11-10
 
 ### Fixed

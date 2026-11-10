@@ -24,18 +24,24 @@ try{
  const zoom=()=>page.getByTitle('Back to fit (100%)',{exact:true}).innerText()
  const reset=()=>page.getByTitle('Back to fit (100%)',{exact:true}).click()
  const wheel=opts=>page.locator('canvas').evaluate((c,opts)=>{const r=c.getBoundingClientRect(),e=new WheelEvent('wheel',{bubbles:true,cancelable:true,deltaY:-120,clientX:r.left+r.width/2,clientY:r.top+r.height/2,...opts});const dispatched=c.dispatchEvent(e);return {defaultPrevented:e.defaultPrevented,dispatched,cancelable:e.cancelable}},opts)
+ // React commits the new view one or two frames after the DOM event, so a fixed
+ // sleep is a race (a 30ms sleep routinely reads the pre-commit readout on a
+ // loaded machine even though the zoom landed). Wait for the expected readout
+ // instead, and let the assertion fail with the real value if it never arrives.
+ const waitZoom=async(expect)=>{for(let i=0;i<150;i++){if(await zoom()===expect)return expect;await page.waitForTimeout(20)}return await zoom()}
+ const pct=n=>Math.round(n*100)+'%'
  for(const key of ['ctrlKey','metaKey']){
-  await reset();const event=await wheel({[key]:true});await page.waitForTimeout(30)
-  const actual=await zoom();results.push({case:key,event,zoom:actual});assert.equal(event.defaultPrevented,true,`${key}: browser default must be prevented`);assert.equal(event.dispatched,false);assert.equal(actual,Math.round(Math.pow(1.0018,120)*100)+'%','exactly one zoom per DOM event')
+  await reset();const event=await wheel({[key]:true});const actual=await waitZoom(pct(Math.pow(1.0018,120)))
+  results.push({case:key,event,zoom:actual});assert.equal(event.defaultPrevented,true,`${key}: browser default must be prevented`);assert.equal(event.dispatched,false);assert.equal(actual,pct(Math.pow(1.0018,120)),'exactly one zoom per DOM event')
  }
- await reset();const plain=await wheel({});await page.waitForTimeout(30);assert.equal(plain.defaultPrevented,false);assert.equal(plain.dispatched,true);assert.equal(await zoom(),'100%');results.push({case:'plain wheel',event:plain,zoom:await zoom()})
- await reset();await wheel({ctrlKey:true,deltaMode:1,deltaY:-3});await page.waitForTimeout(30);assert.equal(await zoom(),Math.round(Math.pow(1.0018,48)*100)+'%');results.push({case:'line delta normalization',zoom:await zoom()})
- await reset();await page.locator('canvas').evaluate(c=>{for(let i=0;i<2;i++)c.dispatchEvent(new WheelEvent('wheel',{bubbles:true,cancelable:true,ctrlKey:true,deltaY:-120}))});await page.waitForTimeout(30);assert.equal(await zoom(),Math.round(Math.pow(1.0018,240)*100)+'%');results.push({case:'same-task burst uses latest view',zoom:await zoom()})
- await page.getByTitle('Zoom in',{exact:true}).click();await wheel({metaKey:true});await page.waitForTimeout(30);assert.equal(await zoom(),Math.round(Math.pow(1.0018,360)*1.3*100)+'%');results.push({case:'button then native wheel uses latest view',zoom:await zoom()})
+ await reset();const plain=await wheel({});assert.equal(plain.defaultPrevented,false);assert.equal(plain.dispatched,true);assert.equal(await waitZoom('100%'),'100%');results.push({case:'plain wheel',event:plain,zoom:await zoom()})
+ await reset();await wheel({ctrlKey:true,deltaMode:1,deltaY:-3});assert.equal(await waitZoom(pct(Math.pow(1.0018,48))),pct(Math.pow(1.0018,48)));results.push({case:'line delta normalization',zoom:await zoom()})
+ await reset();await page.locator('canvas').evaluate(c=>{for(let i=0;i<2;i++)c.dispatchEvent(new WheelEvent('wheel',{bubbles:true,cancelable:true,ctrlKey:true,deltaY:-120}))});assert.equal(await waitZoom(pct(Math.pow(1.0018,240))),pct(Math.pow(1.0018,240)));results.push({case:'same-task burst uses latest view',zoom:await zoom()})
+ await page.getByTitle('Zoom in',{exact:true}).click();await wheel({metaKey:true});assert.equal(await waitZoom(pct(Math.pow(1.0018,360)*1.3)),pct(Math.pow(1.0018,360)*1.3));results.push({case:'button then native wheel uses latest view',zoom:await zoom()})
  await page.evaluate(()=>{window.__oldCanvas=document.querySelector('canvas');window.__layout.set([],false,{isLoading:true})});await page.waitForTimeout(50)
  const cleanup=await page.evaluate(()=>{const c=window.__oldCanvas,e=new WheelEvent('wheel',{cancelable:true,ctrlKey:true,deltaY:-120});c.dispatchEvent(e);return {registrations:window.__wheelListeners.length,active:window.__wheelListeners.filter(l=>!l.removed).length,passive:window.__wheelListeners.map(l=>l.options.passive),defaultPrevented:e.defaultPrevented}})
  assert(cleanup.registrations>0);assert.equal(cleanup.active,0);assert(cleanup.passive.every(v=>v===false));assert.equal(cleanup.defaultPrevented,false);results.push({case:'unmount removes non-passive listener',...cleanup})
- await page.evaluate(()=>window.__layout.set(window.__layout.demo));await page.waitForSelector('canvas');await page.waitForTimeout(50);const remount=await wheel({ctrlKey:true});await page.waitForTimeout(30);assert.equal(remount.defaultPrevented,true);assert.equal(await zoom(),Math.round(Math.pow(1.0018,120)*100)+'%');assert.equal(await page.evaluate(()=>window.__wheelListeners.filter(l=>!l.removed).length),1);results.push({case:'remount exactly one active listener',event:remount,zoom:await zoom()})
+ await page.evaluate(()=>window.__layout.set(window.__layout.demo));await page.waitForSelector('canvas');await page.waitForTimeout(50);const remount=await wheel({ctrlKey:true});assert.equal(remount.defaultPrevented,true);assert.equal(await waitZoom(pct(Math.pow(1.0018,120))),pct(Math.pow(1.0018,120)));assert.equal(await page.evaluate(()=>window.__wheelListeners.filter(l=>!l.removed).length),1);results.push({case:'remount exactly one active listener',event:remount,zoom:await zoom()})
  await page.goto(`http://127.0.0.1:${server.address().port}/wheel-checks.html`)
  await page.waitForFunction(()=>window.__results,{timeout:30000})
  const live=await page.evaluate(()=>window.__results);assert.equal(live.ok,true,JSON.stringify(live))

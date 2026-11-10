@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Build real-browser sofa regression page; stdlib only, all output in scratch.
-Run: python3 tests/sofa-preview.py [saved-before-plugin.js]
+Run: python3 tests/sofa-preview.py [saved-before-plugin.js] [output-directory]
 Then serve the printed directory and open sofa-regression.html; read window.__results.
+The saved-before module is the negative control: it must still fail the pixel oracles.
 SDK/React stubs are for module loading only, never a fake canvas.
 """
 from pathlib import Path
@@ -9,7 +10,8 @@ import re
 import sys
 
 repo = Path(__file__).resolve().parents[1]
-out = Path.home() / '.hermes/cache/scratch/office3d-sofa-fix'
+out = (Path(sys.argv[2]) if len(sys.argv) > 2
+       else Path.home() / '.hermes/cache/scratch/office3d-sofa-fix')
 out.mkdir(parents=True, exist_ok=True)
 source = (repo / 'desktop/plugin.js').read_text()
 exports = '\nexport {drawSofa, sofaDims, loungeLayout, buildPalette, drawFrame, iso};\n'

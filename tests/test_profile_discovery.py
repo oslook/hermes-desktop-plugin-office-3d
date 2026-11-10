@@ -10,13 +10,31 @@ ROOT = Path(__file__).resolve().parents[1]
 MARKERS = ('config.yaml', '.env', 'SOUL.md', 'profile.yaml', 'auth.json', 'state.db')
 
 
+def _gateway_stub():
+    """Stub ``gateway.status`` so the plugin imports without a Hermes checkout.
+
+    Both halves read gateway liveness from the core package; the tests exercise
+    profile discovery only, so a running=False stub keeps the import graph local
+    (and lets the suite run on a bare clone).
+    """
+    gateway = types.ModuleType('gateway')
+    status = types.ModuleType('gateway.status')
+    setattr(status, 'resolve_gateway_liveness', lambda **kwargs: types.SimpleNamespace(
+        running=False, pid=None, source='none'
+    ))
+    setattr(status, 'get_running_pid_cached', lambda *args, **kwargs: None)
+    setattr(gateway, 'status', status)
+    return gateway, status
+
+
 def load(path, core):
     spec = importlib.util.spec_from_file_location('office_test_' + path.stem, path)
     module = importlib.util.module_from_spec(spec)
     if core is None:
         core = types.ModuleType('hermes_constants')
     core.get_default_hermes_root = lambda: Path(tempfile.gettempdir())
-    with patch.dict(sys.modules, {'hermes_constants': core}):
+    gateway, status = _gateway_stub()
+    with patch.dict(sys.modules, {'hermes_constants': core, 'gateway': gateway, 'gateway.status': status}):
         spec.loader.exec_module(module)
     return module
 

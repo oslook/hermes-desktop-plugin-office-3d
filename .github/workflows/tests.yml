@@ -1,0 +1,89 @@
+name: Tests
+
+# Unit tests + the real-Chromium canvas regressions. `validate.yml` only runs the
+# catalog admission gate, which does not execute these, so a red suite could sit
+# unnoticed for weeks (it did).
+#
+# The unit job runs against a bare clone on purpose: suites that need a Hermes
+# checkout skip themselves instead of failing, so the repo is testable anywhere.
+# Locally, export PYTHONPATH=$HOME/.hermes/hermes-agent to run them for real.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  unit:
+    name: Unit tests (bare clone)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Run the unittest suites
+        run: |
+          set -e
+          shopt -s nullglob
+          files=(tests/test_*.py)
+          echo "running ${#files[@]} suite(s)"
+          for f in "${files[@]}"; do
+            echo "::group::$f"
+            python "$f"
+            echo "::endgroup::"
+          done
+
+      - name: Backend label/SQL semantics
+        run: python tests/layout-backend-semantics.py
+
+  browser:
+    name: Canvas regressions (real Chromium)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install the harness dependencies
+        # Versions pinned to the set this suite was verified against.
+        run: |
+          npm install --no-save --no-package-lock \
+            esbuild@0.28.2 @tailwindcss/node@4.3.3 \
+            react@19.3.0 react-dom@19.3.0 playwright@1.64.0
+
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Build the React/Canvas preview from desktop/plugin.js
+        run: node tests/layout-preview.mjs "$PWD/.preview" "$PWD/node_modules"
+
+      - name: Layout regression
+        run: node tests/layout-browser.mjs "$PWD/.preview" "$PWD/node_modules"
+
+      - name: Wheel/zoom regression
+        run: node tests/wheel-browser.mjs "$PWD/.preview" "$PWD/node_modules"
+
+      - name: Self-building canvas runner (layout + sofa)
+        # Builds each bundle from the repo's own builders; the pose page is opt-in
+        # because its pre-fix baseline never existed in git.
+        run: node tests/canvas-browser.mjs --work="$PWD/.canvas" --libs="$PWD/node_modules"
+
+      - name: Keep the regression reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: canvas-regression-reports
+          path: |
+            .preview/*.json
+            .canvas/canvas-results.json
+          if-no-files-found: ignore

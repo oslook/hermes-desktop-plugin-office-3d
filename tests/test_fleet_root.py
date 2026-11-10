@@ -9,7 +9,13 @@ import unittest
 import sys
 import types
 from unittest.mock import patch
-import hermes_constants
+try:  # These tests exercise Hermes' own liveness ladder, so they need a checkout.
+    import hermes_constants
+    import gateway.status  # noqa: F401
+    HERMES_AVAILABLE = True
+except ImportError:  # pragma: no cover - bare clone / CI without Hermes
+    hermes_constants = None
+    HERMES_AVAILABLE = False
 
 REPO = Path(__file__).resolve().parents[1]
 
@@ -17,6 +23,7 @@ REPO = Path(__file__).resolve().parents[1]
 TEMP_ROOT = tempfile.gettempdir()
 
 
+@unittest.skipUnless(HERMES_AVAILABLE, 'needs a Hermes checkout')
 class FleetRootTest(unittest.TestCase):
     def test_dashboard_bot_names_and_refresh(self):
         with tempfile.TemporaryDirectory(prefix='office-names-', dir=TEMP_ROOT) as tmp:
