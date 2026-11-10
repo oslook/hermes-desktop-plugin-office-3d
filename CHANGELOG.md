@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.4.4] - 2026-11-10
 
 ### Fixed
 - **Display names no longer import a private core module.** The dashboard half read
@@ -28,7 +28,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   core import from coming back.
 - **`.github/workflows/tests.yml`**: runs the unittest suites on a bare clone and the real
   Chromium canvas regressions (`layout-browser`, `wheel-browser`, `canvas-browser`) that
-  `validate.yml` never exercised.
+  `validate.yml` never exercised. The unit job installs `fastapi` — the dashboard half's
+  only third-party import — so a bare runner no longer dies at
+  `from fastapi import APIRouter` before the first test; everything else is stdlib or
+  stubbed Hermes core.
+- **CI actions moved off the deprecated Node 20 runtime.** `tests.yml` and `validate.yml`
+  now use `actions/checkout@v7`, `actions/setup-python@v6` and `actions/setup-node@v6`,
+  and the canvas job uploads its reports with `actions/upload-artifact@v7`, clearing the
+  "Node.js 20 is deprecated" annotations.
 - **`tests/canvas-browser.mjs` runs from the repo again.** It used to hardcode
   `verification/...` paths that only exist in a built release bundle, so it 404'd and
   covered nothing. It now builds every bundle from the repo's own builders
